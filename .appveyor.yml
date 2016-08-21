@@ -24,6 +24,9 @@ before_build:
   # Update version with build number
   - ps: (Get-Content "$env:APPVEYOR_BUILD_FOLDER\mcs\mcs\driver.cs") | % { $_ -Replace "(?<version>Version\s*=\s*\`"\d[,|\.]\d[,|\.])\d", ("`${version}"+$env:APPVEYOR_BUILD_NUMBER) } | Set-Content "$env:APPVEYOR_BUILD_FOLDER\mcs\mcs\driver.cs"
 
+artifacts:
+  - path: mcs\class\lib\basic\basic.exe
+  
 # The stdin/stdout file descriptor appears not to be valid for the Appveyor build which causes failures as certain
 # functions attempt to redirect default file handles. Ensure a dummy file descriptor is opened with 'exec'.
 build_script:
