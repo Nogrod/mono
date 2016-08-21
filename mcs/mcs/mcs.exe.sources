@@ -64,3 +64,8 @@ visit.cs
 ../../external/ikvm/reflect/Writer/*.cs
 ../../external/ikvm/reflect/Impl/ITypeOwner.cs
 ../../external/ikvm/reflect/Impl/SymbolSupport.cs
+
+ObjectStream/Data/*.cs
+ObjectStream/IO/*.cs
+ObjectStream/Threading/*.cs
+ObjectStream/*.cs

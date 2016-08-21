@@ -885,7 +885,7 @@ namespace Mono.CSharp
 			}
 		}
 
-		public void Save ()
+		public void Save (Stream assemblyStream = null, Stream symbolStream = null)
 		{
 			PortableExecutableKinds pekind = PortableExecutableKinds.ILOnly;
 			ImageFileMachine machine;
@@ -927,8 +927,14 @@ namespace Mono.CSharp
 			try {
 				if (Compiler.Settings.Target == Target.Module) {
 					SaveModule (pekind, machine);
+				} else if (assemblyStream == null) {
+					Builder.Save(module.Builder.ScopeName, pekind, machine);
 				} else {
-					Builder.Save (module.Builder.ScopeName, pekind, machine);
+#if STATIC
+					Builder.__Save (assemblyStream, pekind, machine);
+#else
+					throw new NotSupportedException ("Save to stream not possible");
+#endif
 				}
 			} catch (ArgumentOutOfRangeException) {
 				Report.Error (16, "Output file `{0}' exceeds the 4GB limit", name);
@@ -952,9 +958,12 @@ namespace Mono.CSharp
 
 				module.WriteDebugSymbol (symbol_writer);
 
-				using (FileStream fs = new FileStream (filename, FileMode.Create, FileAccess.Write)) {
-					symbol_writer.CreateSymbolFile (module.Builder.ModuleVersionId, fs);
-				}
+                if (symbolStream == null)
+				    using (FileStream fs = new FileStream (filename, FileMode.Create, FileAccess.Write)) {
+					    symbol_writer.CreateSymbolFile (module.Builder.ModuleVersionId, fs);
+				    }
+                else
+                    symbol_writer.CreateSymbolFile(module.Builder.ModuleVersionId, symbolStream);
 
 				Compiler.TimeReporter.Stop (TimeReporter.TimerType.DebugSave);
 			}

@@ -20,7 +20,12 @@ using System.IO;
 using System.Text;
 using System.Globalization;
 using System.Diagnostics;
+#if STATIC
 using System.Threading;
+using ObjectStream;
+using ObjectStream.Data;
+using System.Text.RegularExpressions;
+#endif
 
 namespace Mono.CSharp
 {
@@ -30,7 +35,20 @@ namespace Mono.CSharp
 	class Driver
 	{
 		readonly CompilerContext ctx;
-
+#if STATIC
+		static readonly Regex FileErrorRegex = new Regex(@"([\w\.]+)\(\d+,\d+\): error|error \w+: Source file `[\\\./]*([\w\.]+)", RegexOptions.Compiled);
+        static MemoryStream assemblyStream;
+        static MemoryStream symbolStream;
+        static Dictionary<string, byte[]> _sourceFiles;
+		static Dictionary<string, byte[]> _referenceFiles;
+		static StringBuilder _consoleOut;
+		static bool _shouldRun = true;
+		static bool _ready;
+		static bool _exitReceived;
+		static string _logPath = "";
+		static TextWriter _logWriter;
+		const string Version = "1.0.0";
+#endif
 		public Driver (CompilerContext ctx)
 		{
 			this.ctx = ctx;
@@ -45,7 +63,19 @@ namespace Mono.CSharp
 		void tokenize_file (SourceFile sourceFile, ModuleContainer module, ParserSession session)
 		{
 			Stream input;
-
+#if STATIC
+			if (_sourceFiles != null)
+			{
+				if (_sourceFiles.ContainsKey(sourceFile.Name))
+					input = new MemoryStream(_sourceFiles[sourceFile.Name]);
+				else
+				{
+					Report.Error(2001, "Source file `" + sourceFile.Name + "' could not be found");
+					return;
+				}
+			}
+			else
+#endif
 			try {
 				input = File.OpenRead (sourceFile.Name);
 			} catch {
@@ -130,7 +160,19 @@ namespace Mono.CSharp
 		public void Parse (SourceFile file, ModuleContainer module, ParserSession session, Report report)
 		{
 			Stream input;
-
+#if STATIC
+			if (_sourceFiles != null)
+			{
+				if (_sourceFiles.ContainsKey(file.Name))
+					input = new MemoryStream(_sourceFiles[file.Name]);
+				else
+				{
+					report.Error(2001, "Source file `{0}' could not be found", file.Name);
+					return;
+				}
+			}
+			else
+#endif
 			try {
 				input = File.OpenRead (file.Name);
 			} catch {
@@ -169,11 +211,219 @@ namespace Mono.CSharp
 			CSharpParser parser = new CSharpParser (reader, file, report, session);
 			parser.parse ();
 		}
-		
+#if STATIC
+		private static string GetLogFileName()
+		{
+			return string.Format("compiler_{0:dd-MM-yyyy}.txt", DateTime.UtcNow);
+		}
+
+		public static void LogMessage(string message)
+		{
+			_logWriter.WriteLine("[SERVER v{0}] {1}", Version, message);
+		}
+
+		private static void GCCleanup()
+		{
+			System.Runtime.GCSettings.LargeObjectHeapCompactionMode = System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;
+			GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, true);
+			//GC.Collect();
+		}
+
+		private static void Cleanup()
+		{
+			_consoleOut.Clear();
+			Location.Reset();
+			Linq.QueryBlock.TransparentParameter.Reset();
+			TypeInfo.Reset();
+		}
+
+		private static void FullCleanup()
+		{
+			Cleanup();
+			assemblyStream.Close();
+			assemblyStream = new MemoryStream();
+            symbolStream.Close();
+            symbolStream = new MemoryStream();
+            _referenceFiles.Clear();
+			_sourceFiles.Clear();
+			RootContext.ToplevelTypes = null;
+			var type = typeof(CSharpParser);
+			type.GetField("global_yyVals", BindingFlags.Static | BindingFlags.NonPublic).SetValue(null, null);
+			type.GetField("global_yyStates", BindingFlags.Static | BindingFlags.NonPublic).SetValue(null, null);
+			GCCleanup();
+		}
+
+		private static void OnMessage(ObjectStreamConnection<CompilerMessage, CompilerMessage> connection, CompilerMessage message)
+		{
+			if (message == null)
+			{
+				LogMessage("Connection closed.");
+				_exitReceived = true;
+				//Environment.Exit(0);
+				return;
+			}
+			LogMessage("Got Message: " + message.Type);
+			switch (message.Type)
+			{
+				case CompilerMessageType.Compile:
+					try
+					{
+						var compilerData = message.Data as CompilerData;
+						if (compilerData == null || compilerData.ReferenceFiles == null || compilerData.SourceFiles == null)
+						{
+							connection.PushMessage(new CompilerMessage {Id = message.Id, Data = "Data does not contain valid CompilerData", Type = CompilerMessageType.Error});
+							return;
+						}
+						var settings = new CompilerSettings
+						{
+							StdLib = compilerData.StdLib,
+							LoadDefaultReferences = compilerData.LoadDefaultReferences,
+							OutputFile = compilerData.OutputFile,
+							Target = (Target)System.Enum.Parse(typeof(Target), System.Enum.GetName(typeof(CompilerTarget), compilerData.Target)),
+							Platform = (Platform)System.Enum.Parse(typeof(Platform), System.Enum.GetName(typeof(CompilerPlatform), compilerData.Platform)),
+							Version = (LanguageVersion)System.Enum.Parse(typeof(LanguageVersion), System.Enum.GetName(typeof(CompilerLanguageVersion), compilerData.Version)),
+							SdkVersion = compilerData.SdkVersion,
+                            GenerateDebugInfo = compilerData.GenerateDebugInfo,
+							Optimize = true,
+                            Unsafe = compilerData.Unsafe
+						};
+					    if (compilerData.Defines != null)
+					    {
+					        foreach (var define in compilerData.Defines)
+					        {
+					            if (!Tokenizer.IsValidIdentifier(define)) continue;
+                                settings.AddConditionalSymbol(define);
+                            }
+					    }
+						foreach (var referenceFile in compilerData.ReferenceFiles)
+						{
+							settings.AssemblyReferences.Add(referenceFile.Name);
+							_referenceFiles[referenceFile.Name] = referenceFile.Data;
+						}
+						foreach (var sourceFile in compilerData.SourceFiles)
+						{
+							settings.SourceFiles.Add(new SourceFile(sourceFile.Name, sourceFile.Name, settings.SourceFiles.Count + 1));
+							_sourceFiles[sourceFile.Name] = sourceFile.Data;
+						}
+						var outString = new StringBuilder();
+						var tries = 0;
+						var files = new HashSet<string>();
+						Driver d;
+						while (!(d = new Driver(new CompilerContext(settings, new StreamReportPrinter(Console.Out)))).Compile())
+						{
+							if (settings.FirstSourceFile == null || settings.SourceFiles.Count <= 1 || tries++ > 10)
+								break;
+							var matches = FileErrorRegex.Matches(_consoleOut.ToString());
+							foreach (Match match in matches)
+							{
+								for (var i = 1; i < match.Groups.Count; i++)
+								{
+									if (string.IsNullOrWhiteSpace(match.Groups[i].Value)) continue;
+									files.Add(match.Groups[i].Value);
+								}
+							}
+							settings.SourceFiles.Clear();
+							foreach (var sourceFile in compilerData.SourceFiles)
+							{
+								if (files.Contains(sourceFile.Name)) continue;
+								settings.SourceFiles.Add(new SourceFile(sourceFile.Name, sourceFile.Name, settings.SourceFiles.Count + 1));
+							}
+							_consoleOut.AppendLine("Warning: restarting compilation");
+							outString.Append(_consoleOut);
+							Cleanup();
+							LogMessage("Restarting: " + outString);
+						}
+						outString.Append(_consoleOut);
+                        connection.PushMessage(new CompilerMessage { Id = message.Id, Data = d.Report.Errors == 0 ? assemblyStream.ToArray() : null, ExtraData = outString.ToString(), SymbolData = d.Report.Errors == 0 ? symbolStream.ToArray() : null, Type = CompilerMessageType.Assembly });
+						LogMessage("Console: " + _consoleOut);
+						FullCleanup();
+					}
+					catch (Exception e)
+					{
+						LogMessage("Error: " + e.Message + Environment.NewLine + e.StackTrace);
+						connection.PushMessage(new CompilerMessage {Id = message.Id, Data = e.Message + Environment.NewLine + e.StackTrace, Type = CompilerMessageType.Error});
+						FullCleanup();
+					}
+					break;
+				case CompilerMessageType.Exit:
+					LogMessage("Exit received.");
+					_exitReceived = true;
+					//Environment.Exit(0);
+					break;
+				case CompilerMessageType.Ready:
+					_ready = true;
+					break;
+			}
+		}
+
+		private static void OnError(Exception exception)
+		{
+			LogMessage("Error: " + exception.Message + Environment.NewLine + exception.StackTrace);
+		}
+#endif		
 		public static int Main (string[] args)
 		{
+#if BOOTSTRAP_BASIC
+			if (Type.GetType ("Mono.Runtime") != null && Environment.OSVersion.Platform != PlatformID.Unix && Environment.OSVersion.Platform != PlatformID.MacOSX)
+				for (var i = 0; i < args.Length; i++)
+				{
+					args[i] = Encoding.UTF8.GetString(Encoding.Unicode.GetBytes(args[i])).TrimEnd();
+				}
+#endif
+
 			Location.InEmacs = Environment.GetEnvironmentVariable ("EMACS") == "t";
 
+#if STATIC
+			if (Array.IndexOf(args, "/service") != -1)
+			{
+				try
+				{
+					foreach (var arg in args)
+					{
+						if (string.IsNullOrWhiteSpace(arg) || !arg.StartsWith("/logPath:")) continue;
+						var value = arg.Substring(arg.IndexOf(":") + 1);
+						if (Directory.Exists(value)) _logPath = value;
+						break;
+					}
+					var logStream = File.AppendText(Path.Combine(_logPath, GetLogFileName()));
+					logStream.AutoFlush = true;
+					_logWriter = TextWriter.Synchronized(logStream);
+					LogMessage("Started as service");
+					_consoleOut = new StringBuilder();
+					Console.SetOut(new StringWriter(_consoleOut));
+					Console.SetError(new StringWriter(_consoleOut));
+					assemblyStream = new MemoryStream();
+                    symbolStream = new MemoryStream();
+					_sourceFiles = new Dictionary<string, byte[]>();
+					_referenceFiles = new Dictionary<string, byte[]>();
+					/*_sourceFiles["__internal__.cs"] = Encoding.Default.GetBytes("class __internal__{}");
+					new Driver(new CompilerContext(new CommandLineParser(Console.Out).ParseArguments(new[] { "__internal__.cs", "/noconfig", "/nostdlib", "/optimize", "/t:library" }), new StreamReportPrinter(Console.Out))).Compile();
+					FullCleanup();*/
+					var server = new ObjectStreamClient<CompilerMessage>(Console.OpenStandardInput(), Console.OpenStandardOutput());
+					server.Message += OnMessage;
+					server.Error += OnError;
+					server.Start();
+					LogMessage("Running as service");
+					int tries = 0, nextGC = 0;
+					while (!_exitReceived && (_shouldRun || _ready))
+					{
+						_shouldRun = !_ready && tries++ < 30; //wait 30 seconds for bootup
+						if (!_ready) server.PushMessage(new CompilerMessage { Type = CompilerMessageType.Ready });
+						Thread.Sleep(1000);
+						if (nextGC++ < 30) continue;
+						GCCleanup();
+						nextGC = 0;
+					}
+					server.Stop();
+					LogMessage("Shutdown");
+				}
+				catch (Exception e)
+				{
+					LogMessage("Error: " + e.Message + Environment.NewLine + e.StackTrace);
+				}
+				return 0;
+			}
+#endif
 			CommandLineParser cmd = new CommandLineParser (Console.Out);
 			var settings = cmd.ParseArguments (args);
 			if (settings == null)
@@ -318,7 +568,7 @@ namespace Mono.CSharp
 
 #if STATIC
 			var importer = new StaticImporter (module);
-			var references_loader = new StaticLoader (importer, ctx);
+			var references_loader = new StaticLoader (importer, ctx, _referenceFiles);
 
 			tr.Start (TimeReporter.TimerType.AssemblyBuilderSetup);
 			var assembly = new AssemblyDefinitionStatic (module, references_loader, output_file_name, output_file);
@@ -406,8 +656,15 @@ namespace Mono.CSharp
 
 			if (Report.Errors > 0)
 				return false;
-
-			assembly.Save ();
+#if STATIC
+			if (assemblyStream != null)
+				assemblyStream.SetLength(0);
+            if (symbolStream != null)
+                symbolStream.SetLength(0);
+			assembly.Save(assemblyStream, symbolStream);
+#else
+			assembly.Save();
+#endif
 
 #if STATIC
 			references_loader.Dispose ();

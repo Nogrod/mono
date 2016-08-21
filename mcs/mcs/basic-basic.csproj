@@ -1,5 +1,5 @@
-<?xml version="1.0" encoding="utf-8"?>
-<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="12.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
@@ -11,13 +11,13 @@
     <OutputPath>./../class/lib/basic</OutputPath>
     <NoStdLib>False</NoStdLib>
     <NoConfig>True</NoConfig>
-    
     <AppDesignerFolder>Properties</AppDesignerFolder>
     <RootNamespace>
     </RootNamespace>
     <AssemblyName>basic</AssemblyName>
-    <TargetFrameworkVersion>v2.0</TargetFrameworkVersion>
+    <TargetFrameworkVersion>v4.5.1</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
+    <TargetFrameworkProfile />
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <DebugSymbols>true</DebugSymbols>
@@ -27,6 +27,7 @@
     <DefineConstants>DEBUG;TRACE;STATIC;NO_SYMBOL_WRITER;NO_AUTHENTICODE;NET_1_1;NET_2_0;BOOTSTRAP_BASIC</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
     <DebugType>pdbonly</DebugType>
@@ -35,6 +36,7 @@
     <DefineConstants>STATIC;NO_SYMBOL_WRITER;NO_AUTHENTICODE;NET_1_1;NET_2_0;BOOTSTRAP_BASIC</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+    <Prefer32Bit>false</Prefer32Bit>
   </PropertyGroup>
   <!-- Set AddAdditionalExplicitAssemblyReferences to false, otherwise if targetting .NET4.0, 
   Microsoft.NETFramework.props will force a dependency on the assembly System.Core. This
@@ -72,6 +74,7 @@
     <Compile Include="constant.cs" />
     <Compile Include="context.cs" />
     <Compile Include="convert.cs" />
+    <Compile Include="cs-parser.cs" />
     <Compile Include="cs-tokenizer.cs" />
     <Compile Include="decl.cs" />
     <Compile Include="delegate.cs" />
@@ -87,6 +90,7 @@
     <Compile Include="generic.cs" />
     <Compile Include="ikvm.cs" />
     <Compile Include="import.cs" />
+    <Compile Include="Isolated.cs" />
     <Compile Include="iterators.cs" />
     <Compile Include="lambda.cs" />
     <Compile Include="linq.cs" />
@@ -98,6 +102,18 @@
     <Compile Include="module.cs" />
     <Compile Include="namespace.cs" />
     <Compile Include="nullable.cs" />
+    <Compile Include="ObjectStream\Data\CompilerData.cs" />
+    <Compile Include="ObjectStream\Data\CompilerFile.cs" />
+    <Compile Include="ObjectStream\Data\CompilerLanguageVersion.cs" />
+    <Compile Include="ObjectStream\Data\CompilerMessage.cs" />
+    <Compile Include="ObjectStream\Data\CompilerMessageType.cs" />
+    <Compile Include="ObjectStream\Data\CompilerPlatform.cs" />
+    <Compile Include="ObjectStream\Data\CompilerTarget.cs" />
+    <Compile Include="ObjectStream\IO\BindChanger.cs" />
+    <Compile Include="ObjectStream\IO\ObjectStreamWrapper.cs" />
+    <Compile Include="ObjectStream\ObjectStreamClient.cs" />
+    <Compile Include="ObjectStream\ObjectStreamConnection.cs" />
+    <Compile Include="ObjectStream\Threading\Worker.cs" />
     <Compile Include="parameter.cs" />
     <Compile Include="pending.cs" />
     <Compile Include="property.cs" />
@@ -108,7 +124,8 @@
     <Compile Include="support.cs" />
     <Compile Include="typemanager.cs" />
     <Compile Include="typespec.cs" />
-    <Compile Include="visit.cs" />  </ItemGroup>
+    <Compile Include="visit.cs" />
+  </ItemGroup>
   <!-- To modify your build process, add your task inside one of the targets below and uncomment it. 
        Other similar extension points exist, see Microsoft.Common.targets.
   <Target Name="BeforeBuild">
@@ -118,19 +135,18 @@
   -->
   <PropertyGroup>
     <PreBuildEvent>
-
     </PreBuildEvent>
     <PostBuildEvent Condition=" '$(OS)' != 'Windows_NT' ">
-
     </PostBuildEvent>
     <PostBuildEvent Condition=" '$(OS)' == 'Windows_NT' ">
-
     </PostBuildEvent>
   </PropertyGroup>
   <ItemGroup>
-  </ItemGroup>
-  <ItemGroup>
     <Folder Include="Properties\" />
   </ItemGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
+  </ItemGroup>
 </Project>
-

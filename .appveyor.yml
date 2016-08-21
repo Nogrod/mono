@@ -1,0 +1,76 @@
+# Do a shallow clone of the repo to speed up build
+clone_depth: 1
+
+# Attempt to ensure we don't try to convert line endings to Win32 CRLF as this will cause build to fail
+init:
+  - git config --global core.autocrlf input
+
+# Install needed build dependencies
+before_build:
+  # Download and install latest version of CYGWIN
+  - ps: 'Start-FileDownload "http://cygwin.com/setup-x86.exe" -FileName "setup-x86.exe"'
+  - 'setup-x86.exe --quiet-mode --no-shortcuts --only-site --root "%CYG_ROOT%" --site "%CYG_MIRROR%" --local-package-dir "%CYG_CACHE%" --packages autoconf,automake,bison,gcc-core,gcc-g++,mingw-runtime,mingw-binutils,mingw-gcc-core,mingw-gcc-g++,mingw-pthreads,mingw-w32api,libtool,make,python,gettext-devel,gettext,intltool,libiconv,pkg-config,git,curl,libxslt > NUL 2>&1'
+  - '%CYG_BASH% -lc "cygcheck -dc cygwin"'
+  # Download and install the required version of Mono
+  - ps: Start-FileDownload "http://download.mono-project.com/archive/4.4.0/windows-installer/mono-4.4.0.142-gtksharp-2.12.38-win32-0.msi" -FileName "mono.msi"
+  - ps: Start-FileDownload "https://github.com/activescott/lessmsi/releases/download/v1.4/lessmsi-v1.4.zip" -FileName "lessmsi.zip"
+  - 7z e lessmsi.zip > NUL
+  - lessmsi x mono.msi
+  # Set environmental variables and add to PATH
+  - SET MONO_WIN=%APPVEYOR_BUILD_FOLDER%\mono\SourceDir\Mono
+  - for /f "delims=" %%a in ('%%CYG_PATH%% %%MONO_WIN%%') do @set MONO=%%a
+  - SET PATH=%PATH%;%MONO%\bin
+  - ps: $env:MONO_VERSION=(Select-String -Path "$env:APPVEYOR_BUILD_FOLDER\mono\metadata\appdomain.c" -Pattern "\#define MONO_CORLIB_VERSION (\d*)" -AllMatches | % { $_.Matches } | % { $_.Groups[1].Value })
+  # Update version with build number
+  - ps: (Get-Content "$env:APPVEYOR_BUILD_FOLDER\mcs\mcs\driver.cs") | % { $_ -Replace "(?<version>Version\s*=\s*\`"\d[,|\.]\d[,|\.])\d", ("`${version}"+$env:APPVEYOR_BUILD_NUMBER) } | Set-Content "$env:APPVEYOR_BUILD_FOLDER\mcs\mcs\driver.cs"
+
+# The stdin/stdout file descriptor appears not to be valid for the Appveyor build which causes failures as certain
+# functions attempt to redirect default file handles. Ensure a dummy file descriptor is opened with 'exec'.
+build_script:
+  - 'echo Building...'
+  - '%CYG_BASH% -lc "cd $APPVEYOR_BUILD_FOLDER; exec 0</dev/null; ./autogen.sh --prefix=/usr/local --host=i686-pc-mingw32"'
+  - '%CYG_BASH% -lc "cd $APPVEYOR_BUILD_FOLDER/mcs; exec 0</dev/null; make PROFILE=basic all"'
+
+on_success:
+  # If from master branch and not a pull request, deploy to CSharpCompiler repo on GitHub
+  - ps: >-
+      if ($env:APPVEYOR_PULL_REQUEST_NUMBER -ne $null) {
+        echo "Skipping deployment for pull request!"
+      } elseif ($env:APPVEYOR_REPO_BRANCH -ne 'master') {
+        echo "Skipping deployment for non-master branch!"
+      } else {
+        git config --global user.email "appveyor@appveyor.com"
+        git config --global user.name "AppVeyor"
+        git clone -q https://$env:GITHUB_TOKEN@github.com/OxideMod/CSharpCompiler.git CSharpCompiler
+        cp -force mcs\class\lib\basic\basic.exe CSharpCompiler\Resources
+        cd CSharpCompiler
+        git add .
+        git commit -m ("Mono $env:MONO_VERSION build $env:APPVEYOR_BUILD_NUMBER from https://github.com/$env:APPVEYOR_REPO_NAME/commit/" + $env:APPVEYOR_REPO_COMMIT.Substring(0,7))
+        git push -qf origin master
+      }
+
+notifications:
+  - provider: Email
+    on_build_success: false
+    on_build_failure: false
+    on_build_status_changed: false
+  - provider: Slack
+    incoming_webhook:
+      secure: u7b+ql8ck7XEi13iK+e6Nr2RqQ8nIh44Mi3sco3ujAVjzOvOP1E2AMKHDqpG2A/RaRpDFLDg7MhEB+rAZ1haFQYn/tEAVV+nLqqakNmqri0=
+    channel: updates
+
+environment:
+  global:
+    CYG_ROOT: C:\cygwin
+    CYG_MIRROR: http://cygwin.mirror.constant.com
+    CYG_CACHE: C:\cygwin\var\cache\setup
+    CYG_BASH: C:\cygwin\bin\bash
+    CYG_PATH: C:\cygwin\bin\cygpath
+    GITHUB_TOKEN:
+      secure: Z2/V7OEhprXWxpm2C7/UV4lIMDK/2dN4bcg8T6cPr+jMdA5IqHsuZhkL3O6KTjV+
+
+cache:
+  - '%CYG_CACHE%'
+
+test: off
+deploy: off

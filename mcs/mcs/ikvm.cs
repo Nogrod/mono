@@ -237,6 +237,7 @@ namespace Mono.CSharp
 		readonly Universe domain;
 		Assembly corlib;
 		readonly List<Tuple<AssemblyName, string, Assembly>> loaded_names;
+		readonly Dictionary<string, byte[]> referenceFiles;
 		static readonly Dictionary<string, string[]> sdk_directory;
 		Dictionary<AssemblyName, List<AssemblyReferenceErrorInfo>> resolved_version_mismatches;
 		static readonly TypeName objectTypeName = new TypeName ("System", "Object");
@@ -252,10 +253,11 @@ namespace Mono.CSharp
 			sdk_directory.Add ("4.6", new string [] { "4.5", "net_4_x", "v4.0.30319" });
 		}
 
-		public StaticLoader (StaticImporter importer, CompilerContext compiler)
+		public StaticLoader (StaticImporter importer, CompilerContext compiler, Dictionary<string, byte[]> referenceFiles)
 			: base (compiler)
 		{
 			this.importer = importer;
+			this.referenceFiles = referenceFiles;
 			domain = new Universe (UniverseOptions.MetadataOnly | UniverseOptions.ResolveMissingMembers | 
 				UniverseOptions.DisableFusion | UniverseOptions.DecodeVersionInfoAttributeBlobs |
 				UniverseOptions.DeterministicOutput | UniverseOptions.DisableDefaultAssembliesLookup);
@@ -265,7 +267,7 @@ namespace Mono.CSharp
 
 			if (compiler.Settings.StdLib) {
 				var corlib_path = Path.GetDirectoryName (typeof (object).Assembly.Location);
-				string fx_path = corlib_path.Substring (0, corlib_path.LastIndexOf (Path.DirectorySeparatorChar));
+				string fx_path = corlib_path.Length > 0 ? corlib_path.Substring (0, corlib_path.LastIndexOf (Path.DirectorySeparatorChar)) : string.Empty;
 
 				string sdk_path = null;
 
@@ -464,7 +466,10 @@ namespace Mono.CSharp
 				if (compiler.Settings.DebugFlags > 0)
 					Console.WriteLine ("Probing assembly location `{0}'", file);
 
-				if (!File.Exists (file)) {
+				if (referenceFiles != null) {
+					if (!referenceFiles.ContainsKey(fileName))
+						continue;
+				} else if (!File.Exists (file)) {
 					if (!has_extension.HasValue)
 						has_extension = fileName.EndsWith (".dll", StringComparison.Ordinal) || fileName.EndsWith (".exe", StringComparison.Ordinal);
 
@@ -477,7 +482,12 @@ namespace Mono.CSharp
 				}
 
 				try {
-					using (var stream = new FileStream (file, FileMode.Open, FileAccess.Read, FileShare.Read)) {
+					Stream stream;
+					if (referenceFiles != null)
+						stream = new MemoryStream(referenceFiles[fileName]);
+					else
+						stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
+					using (stream) {
 						using (RawModule module = domain.OpenRawModule (stream, file)) {
 							if (!module.IsManifestModule) {
 								Error_AssemblyIsModule (fileName);

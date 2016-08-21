@@ -207,6 +207,7 @@ namespace Mono.CSharp
 		{
 			source_list = new List<SourceFile> ();
 			checkpoint_index = 0;
+			checkpoints = null;
 		}
 
 		public static void AddFile (SourceFile file)
