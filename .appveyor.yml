@@ -31,24 +31,6 @@ build_script:
   - '%CYG_BASH% -lc "cd $APPVEYOR_BUILD_FOLDER; exec 0</dev/null; ./autogen.sh --prefix=/usr/local --host=i686-pc-mingw32"'
   - '%CYG_BASH% -lc "cd $APPVEYOR_BUILD_FOLDER/mcs; exec 0</dev/null; make PROFILE=basic all"'
 
-on_success:
-  # If from master branch and not a pull request, deploy to CSharpCompiler repo on GitHub
-  - ps: >-
-      if ($env:APPVEYOR_PULL_REQUEST_NUMBER -ne $null) {
-        echo "Skipping deployment for pull request!"
-      } elseif ($env:APPVEYOR_REPO_BRANCH -ne 'master') {
-        echo "Skipping deployment for non-master branch!"
-      } else {
-        git config --global user.email "appveyor@appveyor.com"
-        git config --global user.name "AppVeyor"
-        git clone -q https://$env:GITHUB_TOKEN@github.com/OxideMod/CSharpCompiler.git CSharpCompiler
-        cp -force mcs\class\lib\basic\basic.exe CSharpCompiler\Resources
-        cd CSharpCompiler
-        git add .
-        git commit -m ("Mono $env:MONO_VERSION build $env:APPVEYOR_BUILD_NUMBER from https://github.com/$env:APPVEYOR_REPO_NAME/commit/" + $env:APPVEYOR_REPO_COMMIT.Substring(0,7))
-        git push -qf origin master
-      }
-
 notifications:
   - provider: Email
     on_build_success: false
