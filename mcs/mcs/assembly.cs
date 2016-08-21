@@ -885,7 +885,7 @@ namespace Mono.CSharp
 			}
 		}
 
-		public void Save (Stream assemblyStream = null, Stream symbolStream = null)
+		public void Save (Stream assemblyStream = null)
 		{
 			PortableExecutableKinds pekind = PortableExecutableKinds.ILOnly;
 			ImageFileMachine machine;
@@ -958,12 +958,9 @@ namespace Mono.CSharp
 
 				module.WriteDebugSymbol (symbol_writer);
 
-                if (symbolStream == null)
-				    using (FileStream fs = new FileStream (filename, FileMode.Create, FileAccess.Write)) {
-					    symbol_writer.CreateSymbolFile (module.Builder.ModuleVersionId, fs);
-				    }
-                else
-                    symbol_writer.CreateSymbolFile(module.Builder.ModuleVersionId, symbolStream);
+				using (FileStream fs = new FileStream (filename, FileMode.Create, FileAccess.Write)) {
+					symbol_writer.CreateSymbolFile (module.Builder.ModuleVersionId, fs);
+				}
 
 				Compiler.TimeReporter.Stop (TimeReporter.TimerType.DebugSave);
 			}

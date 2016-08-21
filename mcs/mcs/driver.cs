@@ -38,7 +38,6 @@ namespace Mono.CSharp
 #if STATIC
 		static readonly Regex FileErrorRegex = new Regex(@"([\w\.]+)\(\d+,\d+\): error|error \w+: Source file `[\\\./]*([\w\.]+)", RegexOptions.Compiled);
         static MemoryStream assemblyStream;
-        static MemoryStream symbolStream;
         static Dictionary<string, byte[]> _sourceFiles;
 		static Dictionary<string, byte[]> _referenceFiles;
 		static StringBuilder _consoleOut;
@@ -242,8 +241,6 @@ namespace Mono.CSharp
 			Cleanup();
 			assemblyStream.Close();
 			assemblyStream = new MemoryStream();
-            symbolStream.Close();
-            symbolStream = new MemoryStream();
             _referenceFiles.Clear();
 			_sourceFiles.Clear();
 			RootContext.ToplevelTypes = null;
@@ -334,7 +331,7 @@ namespace Mono.CSharp
 							LogMessage("Restarting: " + outString);
 						}
 						outString.Append(_consoleOut);
-                        connection.PushMessage(new CompilerMessage { Id = message.Id, Data = d.Report.Errors == 0 ? assemblyStream.ToArray() : null, ExtraData = outString.ToString(), SymbolData = d.Report.Errors == 0 ? symbolStream.ToArray() : null, Type = CompilerMessageType.Assembly });
+                        connection.PushMessage(new CompilerMessage { Id = message.Id, Data = d.Report.Errors == 0 ? assemblyStream.ToArray() : null, ExtraData = outString.ToString(), Type = CompilerMessageType.Assembly });
 						LogMessage("Console: " + _consoleOut);
 						FullCleanup();
 					}
@@ -393,7 +390,6 @@ namespace Mono.CSharp
 					Console.SetOut(new StringWriter(_consoleOut));
 					Console.SetError(new StringWriter(_consoleOut));
 					assemblyStream = new MemoryStream();
-                    symbolStream = new MemoryStream();
 					_sourceFiles = new Dictionary<string, byte[]>();
 					_referenceFiles = new Dictionary<string, byte[]>();
 					/*_sourceFiles["__internal__.cs"] = Encoding.Default.GetBytes("class __internal__{}");
@@ -659,9 +655,7 @@ namespace Mono.CSharp
 #if STATIC
 			if (assemblyStream != null)
 				assemblyStream.SetLength(0);
-            if (symbolStream != null)
-                symbolStream.SetLength(0);
-			assembly.Save(assemblyStream, symbolStream);
+			assembly.Save(assemblyStream);
 #else
 			assembly.Save();
 #endif
