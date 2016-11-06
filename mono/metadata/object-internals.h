@@ -7,6 +7,7 @@
 #include <mono/metadata/mempool.h>
 #include <mono/metadata/class-internals.h>
 #include <mono/metadata/threads-types.h>
+#include <mono/metadata/handle.h>
 #include <mono/io-layer/io-layer.h>
 #include "mono/utils/mono-compiler.h"
 #include "mono/utils/mono-error.h"
@@ -262,6 +263,9 @@ struct _MonoReflectionType {
 	MonoType  *type;
 };
 
+/* Safely access System.Type from native code */
+TYPED_HANDLE_DECL (MonoReflectionType);
+
 /* This corresponds to System.RuntimeType */
 typedef struct {
 	MonoReflectionType type;
@@ -345,7 +349,8 @@ typedef enum {
 struct _MonoInternalThread {
 	MonoObject  obj;
 	volatile int lock_thread_id; /* to be used as the pre-shifted thread id in thin locks. Used for appdomain_ref push/pop */
-	HANDLE	    handle;
+	MonoThreadHandle *handle;
+	HANDLE native_handle;
 	MonoArray  *cached_culture_info;
 	gunichar2  *name;
 	guint32	    name_len;
@@ -353,7 +358,6 @@ struct _MonoInternalThread {
 	MonoException *abort_exc;
 	int abort_state_handle;
 	guint64 tid;	/* This is accessed as a gsize in the code (so it can hold a 64bit pointer on systems that need it), but needs to reserve 64 bits of space on all machines as it corresponds to a field in managed code */
-	MonoCoopSem *start_notify;
 	gpointer stack_ptr;
 	gpointer *static_data;
 	void *thread_info; /*This is MonoThreadInfo*, but to simplify dependencies, let's make it a void* here. */
@@ -376,14 +380,24 @@ struct _MonoInternalThread {
 	gpointer interrupt_on_stop;
 	gsize    flags;
 	gpointer thread_pinning_ref;
+	gsize abort_protected_block_count;
+	gint32 priority;
+	GPtrArray *owned_mutexes;
+	MonoOSEvent *suspended;
 	/* 
 	 * These fields are used to avoid having to increment corlib versions
 	 * when a new field is added to this structure.
 	 * Please synchronize any changes with InternalThread in Thread.cs, i.e. add the
 	 * same field there.
 	 */
-	gsize start_notify_refcount;
-	gpointer unused2;
+	gsize unused1;
+	gsize unused2;
+
+	/* This is used only to check that we are in sync between the representation
+	 * of MonoInternalThread in native and InternalThread in managed
+	 *
+	 * DO NOT RENAME! DO NOT ADD FIELDS AFTER! */
+	gpointer last;
 };
 
 struct _MonoThread {
@@ -391,7 +405,6 @@ struct _MonoThread {
 	struct _MonoInternalThread *internal_thread;
 	MonoObject *start_obj;
 	MonoException *pending_exception;
-	gint32 priority;
 };
 
 typedef struct {
@@ -584,6 +597,7 @@ typedef struct {
 	void (*mono_raise_exception_with_ctx) (MonoException *ex, MonoContext *ctx);
 	gboolean (*mono_exception_walk_trace) (MonoException *ex, MonoInternalExceptionFrameWalk func, gpointer user_data);
 	gboolean (*mono_install_handler_block_guard) (MonoThreadUnwindState *unwind_state);
+	gboolean (*mono_current_thread_has_handle_block_guard) (void);
 } MonoRuntimeExceptionHandlingCallbacks;
 
 /* used to free a dynamic method */
@@ -807,6 +821,9 @@ struct _MonoReflectionAssembly {
 	MonoBoolean from_byte_array;
 	MonoString *name;
 };
+
+/* Safely access System.Reflection.Assembly from native code */
+TYPED_HANDLE_DECL (MonoReflectionAssembly);
 
 typedef struct {
 	MonoReflectionType *utype;
@@ -1097,6 +1114,9 @@ struct _MonoReflectionModule {
 	guint32 token;
 };
 
+/* Safely access System.Reflection.Module from native code */
+TYPED_HANDLE_DECL (MonoReflectionModule);
+
 typedef struct {
 	MonoReflectionModule module;
 	MonoDynamicImage *dynamic_image;
@@ -1162,12 +1182,16 @@ typedef struct {
 	guint32 attrs;
 } MonoReflectionGenericParam;
 
+typedef struct {
+	MonoReflectionType type;
+	MonoReflectionTypeBuilder *tb;
+} MonoReflectionEnumBuilder;
+
 typedef struct _MonoReflectionGenericClass MonoReflectionGenericClass;
 struct _MonoReflectionGenericClass {
 	MonoReflectionType type;
 	MonoReflectionType *generic_type; /*Can be either a MonoType or a TypeBuilder*/
 	MonoArray *type_arguments;
-	guint32 initialized;
 };
 
 typedef struct {
@@ -1266,26 +1290,6 @@ typedef struct {
 
 typedef struct {
 	MonoObject object;
-	MonoReflectionGenericClass *inst;
-	MonoObject *fb; /*can be either a MonoField or a FieldBuilder*/
-} MonoReflectionFieldOnTypeBuilderInst;
-
-typedef struct {
-	MonoObject object;
-	MonoReflectionGenericClass *inst;
-	MonoObject *cb; /*can be either a MonoCMethod or ConstructorBuilder*/
-} MonoReflectionCtorOnTypeBuilderInst;
-
-typedef struct {
-	MonoObject object;
-	MonoReflectionType *inst;
-	MonoObject *mb; /*can be either a MonoMethod or MethodBuilder*/
-	MonoArray *method_args;
-	MonoReflectionMethodBuilder *generic_method_definition;
-} MonoReflectionMethodOnTypeBuilderInst;
-
-typedef struct {
-	MonoObject object;
 	MonoBoolean visible;
 } MonoReflectionComVisibleAttribute;
 
@@ -1329,7 +1333,6 @@ typedef struct {
 } CattrNamedArg;
 
 gboolean          mono_image_create_pefile (MonoReflectionModuleBuilder *module, HANDLE file, MonoError *error);
-MonoReflectionModule * mono_image_load_module_dynamic (MonoReflectionAssemblyBuilder *assembly, MonoString *file_name, MonoError *error);
 guint32       mono_image_insert_string (MonoReflectionModuleBuilder *module, MonoString *str);
 guint32       mono_image_create_token  (MonoDynamicImage *assembly, MonoObject *obj, gboolean create_methodspec, gboolean register_token, MonoError *error);
 guint32       mono_image_create_method_token (MonoDynamicImage *assembly, MonoObject *obj, MonoArray *opt_param_types, MonoError *error);
@@ -1339,18 +1342,6 @@ void          mono_dynamic_image_free_image (MonoDynamicImage *image);
 void          mono_dynamic_image_release_gc_roots (MonoDynamicImage *image);
 
 void        mono_reflection_setup_internal_class  (MonoReflectionTypeBuilder *tb);
-
-void
-ves_icall_TypeBuilder_create_internal_class (MonoReflectionTypeBuilder *tb);
-
-void
-ves_icall_TypeBuilder_setup_generic_class (MonoReflectionTypeBuilder *tb);
-
-MonoReflectionType*
-ves_icall_TypeBuilder_create_runtime_class (MonoReflectionTypeBuilder *tb);
-
-void
-ves_icall_TypeBuilder_setup_internal_class (MonoReflectionTypeBuilder *tb);
 
 void        mono_reflection_get_dynamic_overrides (MonoClass *klass, MonoMethod ***overrides, int *num_overrides, MonoError *error);
 
@@ -1395,9 +1386,6 @@ ves_icall_System_Reflection_CustomAttributeData_ResolveArgumentsInternal (MonoRe
 
 MonoType*
 mono_reflection_type_get_handle (MonoReflectionType *ref, MonoError *error);
-
-void
-mono_reflection_free_dynamic_generic_class (MonoGenericClass *gclass);
 
 gboolean
 mono_image_build_metadata (MonoReflectionModuleBuilder *module, MonoError *error);
@@ -1516,14 +1504,14 @@ struct _MonoIMTCheckItem {
 	guint8            has_target_code;
 };
 
-typedef gpointer (*MonoImtThunkBuilder) (MonoVTable *vtable, MonoDomain *domain,
+typedef gpointer (*MonoImtTrampolineBuilder) (MonoVTable *vtable, MonoDomain *domain,
 		MonoIMTCheckItem **imt_entries, int count, gpointer fail_trunk);
 
 void
-mono_install_imt_thunk_builder (MonoImtThunkBuilder func);
+mono_install_imt_trampoline_builder (MonoImtTrampolineBuilder func);
 
 void
-mono_set_always_build_imt_thunks (gboolean value);
+mono_set_always_build_imt_trampolines (gboolean value);
 
 void
 mono_vtable_build_imt_slot (MonoVTable* vtable, int imt_slot);
@@ -1537,7 +1525,7 @@ mono_method_add_generic_virtual_invocation (MonoDomain *domain, MonoVTable *vtab
 											MonoMethod *method, gpointer code);
 
 gpointer
-mono_method_alloc_generic_virtual_thunk (MonoDomain *domain, int size);
+mono_method_alloc_generic_virtual_trampoline (MonoDomain *domain, int size);
 
 typedef enum {
 	MONO_UNHANDLED_POLICY_LEGACY,
@@ -1777,24 +1765,18 @@ ves_icall_AssemblyBuilder_basic_init (MonoReflectionAssemblyBuilder *assemblyb);
 MonoReflectionModule*
 ves_icall_AssemblyBuilder_InternalAddModule (MonoReflectionAssemblyBuilder *ab, MonoString *fileName);
 
-void
-ves_icall_TypeBuilder_create_generic_class (MonoReflectionTypeBuilder *tb);
-
 MonoArray*
 ves_icall_CustomAttributeBuilder_GetBlob (MonoReflectionAssembly *assembly, MonoObject *ctor, MonoArray *ctorArgs, MonoArray *properties, MonoArray *propValues, MonoArray *fields, MonoArray* fieldValues);
 
 void
 ves_icall_DynamicMethod_create_dynamic_method (MonoReflectionDynamicMethod *mb);
 
-MonoBoolean
-ves_icall_TypeBuilder_get_IsGenericParameter (MonoReflectionTypeBuilder *tb);
+MonoReflectionType*
+ves_icall_TypeBuilder_create_runtime_class (MonoReflectionTypeBuilder *tb);
 
 void
 ves_icall_EnumBuilder_setup_enum_type (MonoReflectionType *enumtype,
 									   MonoReflectionType *t);
-
-MonoReflectionType*
-ves_icall_ModuleBuilder_create_modified_type (MonoReflectionTypeBuilder *tb, MonoString *smodifiers);
 
 void
 ves_icall_ModuleBuilder_basic_init (MonoReflectionModuleBuilder *moduleb);
@@ -1804,11 +1786,5 @@ ves_icall_ModuleBuilder_getUSIndex (MonoReflectionModuleBuilder *module, MonoStr
 
 void
 ves_icall_ModuleBuilder_set_wrappers_type (MonoReflectionModuleBuilder *moduleb, MonoReflectionType *type);
-
-void
-ves_icall_GenericTypeParameterBuilder_initialize_generic_parameter (MonoReflectionGenericParam *gparam);
-
-MonoReflectionMethod*
-ves_icall_MethodBuilder_MakeGenericMethod (MonoReflectionMethod *rmethod, MonoArray *types);
 
 #endif /* __MONO_OBJECT_INTERNALS_H__ */

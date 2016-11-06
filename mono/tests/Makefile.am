@@ -6,7 +6,7 @@ else
 FEATUREFUL_RUNTIME_TEST = test-appdomain-unload
 endif
 
-check-local: assemblyresolve/test/asm.dll testjit test-generic-sharing test-type-load test-cattr-type-load test-reflection-load-with-context test_platform	\
+check-local: assemblyresolve/test/asm.dll testjit test-generic-sharing test-type-load test-multi-netmodule test-cattr-type-load test-reflection-load-with-context test_platform	\
 		 test-console-output test-messages test-env-options test-unhandled-exception-2 $(FEATUREFUL_RUNTIME_TEST) test-process-stress rm-empty-logs
 check-full: test-sgen check-local
 check-parallel: compile-tests check-full
@@ -85,62 +85,63 @@ STRESS_TESTS_SRC=	\
 	assembly-load-stress.cs
 
 BASE_TEST_MOBILE_STATIC_NOT_SUPPORTED= \
-	remoting4.cs		# Needs remoting support \
-	remoting1.cs		# Needs remoting support \
-	remoting2.cs		# Needs remoting support \
-	remoting3.cs		# Needs remoting support \
-	remoting5.cs		# Needs remoting support \
-	appdomain.cs        # Needs appdomain support \
-	appdomain-client.cs	# Needs appdomain support \
-	appdomain-unload.cs # Needs appdomain support \
-	appdomain-async-invoke.cs	# Needs appdomain support \
-	appdomain-thread-abort.cs	# Needs appdomain support \
-	appdomain1.cs		# Needs appdomain support \
-	appdomain2.cs		# Needs appdomain support \
-	appdomain-exit.cs	# Needs appdomain support \
-	assemblyresolve_event2.2.cs	# Needs appdomain support \
-	appdomain-unload-callback.cs	# Needs appdomain support \
-	appdomain-unload-doesnot-raise-pending-events.cs	# Needs appdomain support \
-	unload-appdomain-on-shutdown.cs # Needs appdomain support \
-	bug-47295.cs # Needs SRE \
-	loader.cs # Needs SRE \
-	pinvoke2.cs # Needs SRE \
-	generic-type-builder.2.cs	# Needs SRE \
-	dynamic-generic-size.cs	# Needs SRE \
-	cominterop.cs	# Needs COM \
-	dynamic-method-access.2.cs	# Need SRE \
-	dynamic-method-finalize.2.cs	# Need SRE \
-	dynamic-method-stack-traces.cs # Need SRE\
-	generic_type_definition.2.cs	# Need SRE \
-	bug-333798-tb.2.cs	# Need SRE \
-	bug-335131.2.cs	# Need SRE \
-	bug-322722_patch_bx.2.cs	# Need SRE\
-	bug-322722_dyn_method_throw.2.cs	# Need SRE \
-	bug-389886-2.cs	# Need SRE \
-	bug-349190.2.cs	# Need SRE \
-	bug-389886-sre-generic-interface-instances.cs	# Need SRE \
-	bug-462592.cs	# Need SRE \
-	bug-575941.cs	# Need SRE \
-	bug-389886-3.cs	# Need SRE \
-	constant-division.cs	# Need SRE \
-	dynamic-method-resurrection.cs	# Need SRE \
-	bug-80307.cs	# Need System.Web \
-	assembly_append_ordering.cs # Need SRE \
-	bug-544446.cs	# Needs AppDomains / TranparentProxy \
-	bug-36848.cs   # Needs AppDomains / TranparentProxy \
-	generic-marshalbyref.2.cs # Needs AppDomains \
-	stackframes-async.2.cs # Needs AppDomains \
-	transparentproxy.cs # Needs AppDomains / TranparentProxy \
-	bug-48015.cs # Needs AppDomains / TranparentProxy \
-	delegate9.cs # Needs AppDomains \
-	marshal-valuetypes.cs	# Needs AppDomains \
-	xdomain-threads.cs	# Needs AppDomains \
-	monitor.cs # Needs AppDomains \
-	generic-xdomain.2.cs # Needs AppDomains \
-	threadpool-exceptions7.cs # Needs AppDomains \
-	cross-domain.cs # Needs AppDomains \
-	generic-unloading.2.cs # Needs AppDomains \
-	thread6.cs # On MOBILE, ThreadAbortException doesn't have necessary field for this test
+	remoting4.cs	\
+	remoting1.cs	\
+	remoting2.cs	\
+	remoting3.cs	\
+	remoting5.cs	\
+	appdomain.cs	\
+	appdomain-client.cs	\
+	appdomain-unload.cs	\
+	appdomain-async-invoke.cs	\
+	appdomain-thread-abort.cs	\
+	appdomain1.cs	\
+	appdomain2.cs	\
+	appdomain-exit.cs	\
+	assemblyresolve_event2.2.cs	\
+	appdomain-unload-callback.cs	\
+	appdomain-unload-doesnot-raise-pending-events.cs	\
+	unload-appdomain-on-shutdown.cs	\
+	bug-47295.cs	\
+	loader.cs	\
+	pinvoke2.cs	\
+	generic-type-builder.2.cs	\
+	dynamic-generic-size.cs	\
+	cominterop.cs	\
+	dynamic-method-access.2.cs	\
+	dynamic-method-finalize.2.cs	\
+	dynamic-method-stack-traces.cs	\
+	generic_type_definition.2.cs	\
+	bug-333798-tb.2.cs	\
+	bug-335131.2.cs	\
+	bug-322722_patch_bx.2.cs	\
+	bug-322722_dyn_method_throw.2.cs	\
+	bug-389886-2.cs	\
+	bug-349190.2.cs	\
+	bug-389886-sre-generic-interface-instances.cs	\
+	bug-462592.cs	\
+	bug-575941.cs	\
+	bug-389886-3.cs	\
+	constant-division.cs	\
+	dynamic-method-resurrection.cs	\
+	bug-80307.cs	\
+	assembly_append_ordering.cs	\
+	bug-544446.cs	\
+	bug-36848.cs	\
+	generic-marshalbyref.2.cs	\
+	stackframes-async.2.cs	\
+	transparentproxy.cs	\
+	bug-48015.cs	\
+	delegate9.cs	\
+	marshal-valuetypes.cs	\
+	xdomain-threads.cs	\
+	monitor.cs	\
+	generic-xdomain.2.cs	\
+	threadpool-exceptions7.cs	\
+	cross-domain.cs	\
+	generic-unloading.2.cs	\
+	namedmutex-destroy-race.cs	\
+	thread6.cs
 
 # Disabled until ?mcs is fixed
 #	bug-331958.cs
@@ -193,6 +194,7 @@ BASE_TEST_CS_SRC_UNIVERSAL=		\
 	typeof-ptr.cs		\
 	static-constructor.cs	\
 	pinvoke.cs		\
+	pinvoke-utf8.cs		\
 	pinvoke3.cs		\
 	pinvoke11.cs		\
 	pinvoke13.cs		\
@@ -466,7 +468,11 @@ BASE_TEST_CS_SRC_UNIVERSAL=		\
 	pinvoke_ppcf.cs	\
 	pinvoke_ppcd.cs	\
 	bug-29585.cs	\
-	priority.cs
+	priority.cs	\
+	abort-cctor.cs	\
+	thread-native-exit.cs \
+	reference-loader.cs \
+	thread-suspend-suspended.cs
 
 if INSTALL_MOBILE_STATIC
 BASE_TEST_CS_SRC= \
@@ -511,7 +517,7 @@ if X86
 
 if HOST_WIN32
 PLATFORM_DISABLED_TESTS=async-exc-compilation.exe finally_guard.exe finally_block_ending_in_dead_bb.exe \
-	bug-18026.exe monitor.exe threadpool-exceptions5.exe
+	bug-18026.exe monitor.exe threadpool-exceptions5.exe pinvoke-utf8.exe
 endif
 
 endif
@@ -784,7 +790,8 @@ TEST_IL_SRC_UNIVERSAL=			\
 	delegate-with-null-target.il	\
 	bug-318677.il	\
 	gsharing-valuetype-layout.il	\
-	invalid_generic_instantiation.il
+	invalid_generic_instantiation.il \
+	bug-45841-fpstack-exceptions.il
 
 if INSTALL_MOBILE_STATIC
 TEST_IL_SRC= \
@@ -799,18 +806,22 @@ endif
 # but that need to be compiled
 PREREQ_IL_SRC=event-il.il module-cctor.il
 PREREQ_CS_SRC=
-PREREQ_IL_DLL_SRC=event-il.il module-cctor.il
-PREREQ_CS_DLL_SRC=
+PREREQ_IL_DLL_SRC=
+PREREQ_CS_DLL_SRC=TestingReferenceAssembly.cs TestingReferenceReferenceAssembly.cs
 
-PREREQSI_IL=$(PREREQ_IL_SRC:.il=.exe)
-PREREQSI_CS=$(PREREQ_CS_SRC:.cs=.exe)
+PREREQSI_IL=$(PREREQ_IL_SRC:.il=.exe) \
+	$(PREREQ_IL_DLL_SRC:.il=.dll)
+PREREQSI_CS=$(PREREQ_CS_SRC:.cs=.exe) \
+	$(PREREQ_CS_DLL_SRC:.cs=.dll)
 TESTSI_CS=$(TEST_CS_SRC:.cs=.exe)
 TESTSI_IL=$(TEST_IL_SRC:.il=.exe)
 TESTBS=$(BENCHSRC:.cs=.exe)
 STRESS_TESTS=$(STRESS_TESTS_SRC:.cs=.exe)
 
-PREREQSI_IL_AOT=$(PREREQ_IL_SRC:.il=.exe$(PLATFORM_AOT_SUFFIX))
-PREREQSI_CS_AOT=$(PREREQ_CS_SRC:.cs=.exe$(PLATFORM_AOT_SUFFIX))
+PREREQSI_IL_AOT=$(PREREQ_IL_SRC:.il=.exe$(PLATFORM_AOT_SUFFIX)) \
+		$(PREREQ_IL_DLL_SRC:.il=.dll$(PLATFORM_AOT_SUFFIX))
+PREREQSI_CS_AOT=$(PREREQ_CS_SRC:.cs=.exe$(PLATFORM_AOT_SUFFIX)) \
+		$(PREREQ_CS_DLL_SRC:.cs=.dll$(PLATFORM_AOT_SUFFIX))
 
 EXTRA_DIST=test-driver test-runner.cs $(TEST_CS_SRC_DIST) $(TEST_IL_SRC) \
 	$(BENCHSRC) $(STRESS_TESTS_SRC) stress-runner.pl $(PREREQ_IL_SRC) $(PREREQ_CS_SRC)
@@ -830,6 +841,12 @@ endif
 
 %.exe: %.cs $(TEST_DRIVER_DEPEND)
 	$(MCS) -r:System.dll -r:System.Xml.dll -r:System.Core.dll -r:TestDriver.dll $(TEST_DRIVER_HARD_KILL_FEATURE) -out:$@ $<
+
+%.dll: %.cs
+	$(MCS) -r:System.dll -target:library -out:$@ $<
+
+TestingReferenceReferenceAssembly.dll: TestingReferenceReferenceAssembly.cs TestingReferenceAssembly.dll
+	$(MCS) -r:TestingReferenceAssembly.dll -target:library -out:$@ $<
 
 %.exe$(PLATFORM_AOT_SUFFIX): %.exe 
 	$(RUNTIME) $(AOT_BUILD_FLAGS) $<
@@ -865,7 +882,9 @@ bug-324535-il.dll$(PLATFORM_AOT_SUFFIX)	\
 bug-36848-a.dll$(PLATFORM_AOT_SUFFIX)	\
 bug-81691-b.dll$(PLATFORM_AOT_SUFFIX)	\
 bug-327438.2.exe$(PLATFORM_AOT_SUFFIX)	\
-bug-81466-lib.dll$(PLATFORM_AOT_SUFFIX)
+bug-81466-lib.dll$(PLATFORM_AOT_SUFFIX)	\
+TestingReferenceAssembly.dll$(PLATFORM_AOT_SUFFIX)	\
+TestingReferenceReferenceAssembly.dll$(PLATFORM_AOT_SUFFIX)
 
 if INSTALL_MOBILE_STATIC
 prereqs: $(PREREQSI_IL_AOT) $(PREREQSI_CS_AOT) $(AOT_EXTRA_LIBS)
@@ -1064,6 +1083,14 @@ test-type-load: $(TEST_DRIVER_DEPEND)
 	@echo "Testing load-exception.exe..."
 	@$(RUNTIME) load-exceptions.exe > load-exceptions.exe.stdout 2> load-exceptions.exe.stderr
 
+EXTRA_DIST += test-multi-netmodule-1-netmodule.cs test-multi-netmodule-2-dll1.cs test-multi-netmodule-3-dll2.cs test-multi-netmodule-4-exe.cs
+test-multi-netmodule:
+	@$(MCS) -t:module test-multi-netmodule-1-netmodule.cs
+	@$(MCS) -addmodule:test-multi-netmodule-1-netmodule.netmodule -t:library test-multi-netmodule-2-dll1.cs
+	@$(MCS) -addmodule:test-multi-netmodule-1-netmodule.netmodule -t:library test-multi-netmodule-3-dll2.cs
+	@$(MCS) -r:test-multi-netmodule-2-dll1.dll test-multi-netmodule-4-exe.cs
+	$(RUNTIME) test-multi-netmodule-4-exe.exe > test-multi-netmodule-4-exe.exe.stdout 2> test-multi-netmodule-4-exe.exe.stderr
+
 EXTRA_DIST += custom-attr-errors.cs custom-attr-errors-lib.cs
 test-cattr-type-load: $(TEST_DRIVER_DEPEND) custom-attr-errors.cs custom-attr-errors-lib.cs
 	$(MCS) -D:WITH_MEMBERS /t:library $(srcdir)/custom-attr-errors-lib.cs
@@ -1088,7 +1115,7 @@ debug-casts:
 	@$(MCS) -r:TestDriver.dll $(srcdir)/debug-casts.cs
 	@$(RUNTIME) --debug=casts debug-casts.exe
 
-EXTRA_DIST += sgen-bridge.cs sgen-descriptors.cs sgen-gshared-vtype.cs sgen-bridge-major-fragmentation.cs sgen-domain-unload.cs sgen-weakref-stress.cs sgen-cementing-stress.cs sgen-case-23400.cs 	finalizer-wait.cs critical-finalizers.cs sgen-domain-unload-2.cs sgen-suspend.cs sgen-new-threads-dont-join-stw.cs sgen-new-threads-dont-join-stw-2.cs sgen-bridge-xref.cs bug-17590.cs sgen-toggleref.cs sgen-bridge-gchandle.cs
+EXTRA_DIST += sgen-bridge.cs sgen-descriptors.cs sgen-gshared-vtype.cs sgen-bridge-major-fragmentation.cs sgen-domain-unload.cs sgen-weakref-stress.cs sgen-cementing-stress.cs sgen-case-23400.cs 	finalizer-wait.cs critical-finalizers.cs sgen-domain-unload-2.cs sgen-suspend.cs sgen-new-threads-dont-join-stw.cs sgen-new-threads-dont-join-stw-2.cs sgen-new-threads-collect.cs sgen-bridge-xref.cs bug-17590.cs sgen-toggleref.cs sgen-bridge-gchandle.cs
 
 
 sgen-tests:
@@ -1113,6 +1140,7 @@ SGEN_REGULAR_TESTS_UNIVERSAL =	\
 	sgen-case-23400.exe	\
 	sgen-new-threads-dont-join-stw.exe	\
 	sgen-new-threads-dont-join-stw-2.exe	\
+	sgen-new-threads-collect.exe	\
 	gc-graystack-stress.exe	\
 	bug-17590.exe
 
@@ -1126,31 +1154,31 @@ SGEN_REGULAR_TESTS= \
 endif
 
 sgen-regular-tests: $(SGEN_REGULAR_TESTS)
-	$(MAKE) sgen-regular-tests-plain
+	$(MAKE) sgen-regular-tests-ms
 	$(MAKE) sgen-regular-tests-ms-conc
 	$(MAKE) sgen-regular-tests-ms-conc-split
 	$(MAKE) sgen-regular-tests-ms-split
-	$(MAKE) sgen-regular-tests-ms-split-95
-	$(MAKE) sgen-regular-tests-plain-clear-at-gc
+	$(MAKE) sgen-regular-tests-ms-conc-split-95
+	$(MAKE) sgen-regular-tests-ms-clear-at-gc
 	$(MAKE) sgen-regular-tests-ms-conc-clear-at-gc
-	$(MAKE) sgen-regular-tests-ms-split-clear-at-gc
+	$(MAKE) sgen-regular-tests-ms-conc-split-clear-at-gc
 
-sgen-regular-tests-plain: $(SGEN_REGULAR_TESTS) test-runner.exe
-	MONO_ENV_OPTIONS="--gc=sgen" MONO_GC_DEBUG="" MONO_GC_PARAMS="" $(RUNTIME) $(TEST_RUNNER) $(TEST_RUNNER_ARGS) --testsuite-name $@ --timeout 900 $(SGEN_REGULAR_TESTS)
+sgen-regular-tests-ms: $(SGEN_REGULAR_TESTS) test-runner.exe
+	MONO_ENV_OPTIONS="--gc=sgen" MONO_GC_DEBUG="" MONO_GC_PARAMS="major=marksweep" $(RUNTIME) $(TEST_RUNNER) $(TEST_RUNNER_ARGS) --testsuite-name $@ --timeout 900 $(SGEN_REGULAR_TESTS)
 sgen-regular-tests-ms-conc: $(SGEN_REGULAR_TESTS) test-runner.exe
 	MONO_ENV_OPTIONS="--gc=sgen" MONO_GC_DEBUG="" MONO_GC_PARAMS="major=marksweep-conc" $(RUNTIME) $(TEST_RUNNER) $(TEST_RUNNER_ARGS) --testsuite-name $@ --timeout 900 $(SGEN_REGULAR_TESTS)
 sgen-regular-tests-ms-conc-split: $(SGEN_REGULAR_TESTS) test-runner.exe
 	MONO_ENV_OPTIONS="--gc=sgen" MONO_GC_DEBUG="" MONO_GC_PARAMS="major=marksweep-conc,minor=split" $(RUNTIME) $(TEST_RUNNER) $(TEST_RUNNER_ARGS) --testsuite-name $@ --timeout 900 $(SGEN_REGULAR_TESTS)
 sgen-regular-tests-ms-split: $(SGEN_REGULAR_TESTS) test-runner.exe
-	MONO_ENV_OPTIONS="--gc=sgen" MONO_GC_DEBUG="" MONO_GC_PARAMS="minor=split" $(RUNTIME) $(TEST_RUNNER) $(TEST_RUNNER_ARGS) --testsuite-name $@ --timeout 900 $(SGEN_REGULAR_TESTS)
-sgen-regular-tests-ms-split-95: $(SGEN_REGULAR_TESTS) test-runner.exe
-	MONO_ENV_OPTIONS="--gc=sgen" MONO_GC_DEBUG="" MONO_GC_PARAMS="minor=split,alloc-ratio=95" $(RUNTIME) $(TEST_RUNNER) $(TEST_RUNNER_ARGS) --testsuite-name $@ --timeout 900 $(SGEN_REGULAR_TESTS)
-sgen-regular-tests-plain-clear-at-gc: $(SGEN_REGULAR_TESTS) test-runner.exe
-	MONO_ENV_OPTIONS="--gc=sgen" MONO_GC_DEBUG="clear-at-gc" MONO_GC_PARAMS="" $(RUNTIME) $(TEST_RUNNER) $(TEST_RUNNER_ARGS) --testsuite-name $@ --timeout 900 $(SGEN_REGULAR_TESTS)
+	MONO_ENV_OPTIONS="--gc=sgen" MONO_GC_DEBUG="" MONO_GC_PARAMS="major=marksweep,minor=split" $(RUNTIME) $(TEST_RUNNER) $(TEST_RUNNER_ARGS) --testsuite-name $@ --timeout 900 $(SGEN_REGULAR_TESTS)
+sgen-regular-tests-ms-conc-split-95: $(SGEN_REGULAR_TESTS) test-runner.exe
+	MONO_ENV_OPTIONS="--gc=sgen" MONO_GC_DEBUG="" MONO_GC_PARAMS="major=marksweep-conc,minor=split,alloc-ratio=95" $(RUNTIME) $(TEST_RUNNER) $(TEST_RUNNER_ARGS) --testsuite-name $@ --timeout 900 $(SGEN_REGULAR_TESTS)
+sgen-regular-tests-ms-clear-at-gc: $(SGEN_REGULAR_TESTS) test-runner.exe
+	MONO_ENV_OPTIONS="--gc=sgen" MONO_GC_DEBUG="clear-at-gc" MONO_GC_PARAMS="major=marksweep" $(RUNTIME) $(TEST_RUNNER) $(TEST_RUNNER_ARGS) --testsuite-name $@ --timeout 900 $(SGEN_REGULAR_TESTS)
 sgen-regular-tests-ms-conc-clear-at-gc: $(SGEN_REGULAR_TESTS) test-runner.exe
 	MONO_ENV_OPTIONS="--gc=sgen" MONO_GC_DEBUG="clear-at-gc" MONO_GC_PARAMS="major=marksweep-conc" $(RUNTIME) $(TEST_RUNNER) $(TEST_RUNNER_ARGS) --testsuite-name $@ --timeout 900 $(SGEN_REGULAR_TESTS)
-sgen-regular-tests-ms-split-clear-at-gc: $(SGEN_REGULAR_TESTS) test-runner.exe
-	MONO_ENV_OPTIONS="--gc=sgen" MONO_GC_DEBUG="clear-at-gc" MONO_GC_PARAMS="minor=split" $(RUNTIME) $(TEST_RUNNER) $(TEST_RUNNER_ARGS) --testsuite-name $@ --timeout 900 $(SGEN_REGULAR_TESTS)
+sgen-regular-tests-ms-conc-split-clear-at-gc: $(SGEN_REGULAR_TESTS) test-runner.exe
+	MONO_ENV_OPTIONS="--gc=sgen" MONO_GC_DEBUG="clear-at-gc" MONO_GC_PARAMS="major=marksweep-conc,minor=split" $(RUNTIME) $(TEST_RUNNER) $(TEST_RUNNER_ARGS) --testsuite-name $@ --timeout 900 $(SGEN_REGULAR_TESTS)
 
 SGEN_TOGGLEREF_TESTS=	\
 	sgen-toggleref.exe

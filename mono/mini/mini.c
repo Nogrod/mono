@@ -1052,7 +1052,7 @@ mini_method_verify (MonoCompile *cfg, MonoMethod *method, gboolean fail_compile)
 					else if (info->exception_type == MONO_EXCEPTION_FIELD_ACCESS)
 						mono_error_set_generic_error (&cfg->error, "System", "FieldAccessException", "%s", msg);
 					else if (info->exception_type == MONO_EXCEPTION_UNVERIFIABLE_IL)
-						mono_error_set_generic_error (&cfg->error, "System.Security", "VerificationException", msg);
+						mono_error_set_generic_error (&cfg->error, "System.Security", "VerificationException", "%s", msg);
 					if (!mono_error_ok (&cfg->error)) {
 						mono_cfg_set_exception (cfg, MONO_EXCEPTION_MONO_ERROR);
 						g_free (msg);
@@ -2422,7 +2422,7 @@ mono_codegen (MonoCompile *cfg)
 		gboolean is_generic = FALSE;
 
 		if (cfg->method->is_inflated || mono_method_get_generic_container (cfg->method) ||
-				cfg->method->klass->generic_container || cfg->method->klass->generic_class) {
+				mono_class_is_gtd (cfg->method->klass) || mono_class_is_ginst (cfg->method->klass)) {
 			is_generic = TRUE;
 		}
 
@@ -3136,8 +3136,8 @@ init_backend (MonoBackend *backend)
 #ifdef MONO_ARCH_HAVE_OBJC_GET_SELECTOR
 	backend->have_objc_get_selector = 1;
 #endif
-#ifdef MONO_ARCH_HAVE_GENERALIZED_IMT_THUNK
-	backend->have_generalized_imt_thunk = 1;
+#ifdef MONO_ARCH_HAVE_GENERALIZED_IMT_TRAMPOLINE
+	backend->have_generalized_imt_trampoline = 1;
 #endif
 #ifdef MONO_ARCH_GSHARED_SUPPORTED
 	backend->gshared_supported = 1;
@@ -3174,6 +3174,9 @@ init_backend (MonoBackend *backend)
 #endif
 #ifdef MONO_ARCH_DYN_CALL_PARAM_AREA
 	backend->dyn_call_param_area = MONO_ARCH_DYN_CALL_PARAM_AREA;
+#endif
+#ifdef MONO_ARCH_NO_DIV_WITH_MUL
+	backend->disable_div_with_mul = 1;
 #endif
 }
 
@@ -3332,7 +3335,7 @@ mini_method_compile (MonoMethod *method, guint32 opts, MonoDomain *domain, JitFl
 		cfg->seq_points = g_ptr_array_new ();
 	mono_error_init (&cfg->error);
 
-	if (cfg->compile_aot && !try_generic_shared && (method->is_generic || method->klass->generic_container || method_is_gshared)) {
+	if (cfg->compile_aot && !try_generic_shared && (method->is_generic || mono_class_is_gtd (method->klass) || method_is_gshared)) {
 		cfg->exception_type = MONO_EXCEPTION_GENERIC_SHARING_FAILED;
 		return cfg;
 	}
@@ -4053,7 +4056,7 @@ void
 mono_cfg_set_exception_invalid_program (MonoCompile *cfg, char *msg)
 {
 	mono_cfg_set_exception (cfg, MONO_EXCEPTION_MONO_ERROR);
-	mono_error_set_generic_error (&cfg->error, "System", "InvalidProgramException", msg);
+	mono_error_set_generic_error (&cfg->error, "System", "InvalidProgramException", "%s", msg);
 }
 
 #endif /* DISABLE_JIT */
@@ -4241,7 +4244,7 @@ mono_jit_compile_method_inner (MonoMethod *method, MonoDomain *target_domain, in
 
 	if (mono_aot_only) {
 		char *fullname = mono_method_full_name (method, TRUE);
-		mono_error_set_execution_engine (error, "Attempting to JIT compile method '%s' while running with --aot-only. See http://docs.xamarin.com/ios/about/limitations for more information.\n", fullname);
+		mono_error_set_execution_engine (error, "Attempting to JIT compile method '%s' while running in aot-only mode. See https://developer.xamarin.com/guides/ios/advanced_topics/limitations/ for more information.\n", fullname);
 		g_free (fullname);
 
 		return NULL;
@@ -4397,9 +4400,8 @@ mono_jit_compile_method_inner (MonoMethod *method, MonoDomain *target_domain, in
 
 	vtable = mono_class_vtable (target_domain, method->klass);
 	if (!vtable) {
-		ex = mono_class_get_exception_for_failure (method->klass);
-		g_assert (ex);
-		mono_error_set_exception_instance (error, ex);
+		g_assert (mono_class_has_failure (method->klass));
+		mono_error_set_for_class_failure (error, method->klass);
 		return NULL;
 	}
 

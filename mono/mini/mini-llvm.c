@@ -6,7 +6,8 @@
  * Licensed under the MIT license. See LICENSE file in the project root for full license information.
  */
 
-#include "mini.h"
+#include "config.h"
+
 #include <mono/metadata/debug-helpers.h>
 #include <mono/metadata/debug-mono-symfile.h>
 #include <mono/metadata/mempool-internals.h>
@@ -32,6 +33,8 @@
 #include "llvm-jit.h"
 #include "aot-compiler.h"
 #include "mini-llvm.h"
+
+#ifndef DISABLE_JIT
 
 #ifdef __MINGW32__
 
@@ -148,6 +151,7 @@ typedef struct {
 	LLVMValueRef rgctx_arg;
 	LLVMValueRef this_arg;
 	LLVMTypeRef *vreg_types;
+	gboolean *is_vphi;
 	LLVMTypeRef method_type;
 	LLVMBasicBlockRef init_bb, inited_bb;
 	gboolean *is_dead;
@@ -170,6 +174,7 @@ typedef struct {
 	GPtrArray *bblock_list;
 	char *method_name;
 	GHashTable *jit_callees;
+	LLVMValueRef long_bb_break_var;
 } EmitContext;
 
 typedef struct {
@@ -1739,6 +1744,8 @@ get_handler_clause (MonoCompile *cfg, MonoBasicBlock *bb)
 static MonoExceptionClause *
 get_most_deep_clause (MonoCompile *cfg, EmitContext *ctx, MonoBasicBlock *bb)
 {
+	if (bb == cfg->bb_init)
+		return NULL;
 	// Since they're sorted by nesting we just need
 	// the first one that the bb is a member of
 	for (int i = 0; i < cfg->header->num_clauses; i++) {
@@ -3483,6 +3490,9 @@ process_call (EmitContext *ctx, MonoBasicBlock *bb, LLVMBuilderRef *builder_ref,
 
 	lcall = emit_call (ctx, bb, &builder, callee, args, LLVMCountParamTypes (llvm_sig));
 
+	if (ins->opcode != OP_TAILCALL && LLVMGetInstructionOpcode (lcall) == LLVMCall)
+		mono_llvm_set_call_notail (lcall);
+
 	/*
 	 * Modify cconv and parameter attributes to pass rgctx/imt correctly.
 	 */
@@ -4150,13 +4160,36 @@ process_bb (EmitContext *ctx, MonoBasicBlock *bb)
 		if (nins > 1000) {
 			/*
 			 * Some steps in llc are non-linear in the size of basic blocks, see #5714.
-			 * Start a new bblock. If the llvm optimization passes merge these, we
-			 * can work around that by doing a volatile load + cond branch from
-			 * localloc-ed memory.
+			 * Start a new bblock.
+			 * Prevent the bblocks to be merged by doing a volatile load + cond branch
+			 * from localloc-ed memory.
 			 */
-			//set_failure (ctx, "basic block too long");
+			if (!cfg->llvm_only)
+				;//set_failure (ctx, "basic block too long");
+
+			if (!ctx->long_bb_break_var) {
+				ctx->long_bb_break_var = build_alloca_llvm_type_name (ctx, LLVMInt32Type (), 0, "long_bb_break");
+				mono_llvm_build_store (ctx->alloca_builder, LLVMConstInt (LLVMInt32Type (), 0, FALSE), ctx->long_bb_break_var, TRUE, LLVM_BARRIER_NONE);
+			}
+
 			cbb = gen_bb (ctx, "CONT_LONG_BB");
-			LLVMBuildBr (ctx->builder, cbb);
+			LLVMBasicBlockRef dummy_bb = gen_bb (ctx, "CONT_LONG_BB_DUMMY");
+
+			LLVMValueRef load = mono_llvm_build_load (builder, ctx->long_bb_break_var, "", TRUE);
+			/*
+			 * The long_bb_break_var is initialized to 0 in the prolog, so this branch will always go to 'cbb'
+			 * but llvm doesn't know that, so the branch is not going to be eliminated.
+			 */
+			LLVMValueRef cmp = LLVMBuildICmp (builder, LLVMIntEQ, load, LLVMConstInt (LLVMInt32Type (), 0, FALSE), "");
+
+			LLVMBuildCondBr (builder, cmp, cbb, dummy_bb);
+
+			/* Emit a dummy false bblock which does nothing but contains a volatile store so it cannot be eliminated */
+			ctx->builder = builder = create_builder (ctx);
+			LLVMPositionBuilderAtEnd (builder, dummy_bb);
+			mono_llvm_build_store (builder, LLVMConstInt (LLVMInt32Type (), 1, FALSE), ctx->long_bb_break_var, TRUE, LLVM_BARRIER_NONE);
+			LLVMBuildBr (builder, cbb);
+
 			ctx->builder = builder = create_builder (ctx);
 			LLVMPositionBuilderAtEnd (builder, cbb);
 			ctx->bblocks [bb->block_num].end_bblock = cbb;
@@ -5375,6 +5408,17 @@ process_bb (EmitContext *ctx, MonoBasicBlock *bb)
 			values [ins->dreg] = LLVMBuildSelect (builder, v, lhs, rhs, dname);
 			break;
 		}
+
+/*
+ * See the ARM64 comment in mono/utils/atomic.h for an explanation of why this
+ * hack is necessary (for now).
+ */
+#ifdef TARGET_ARM64
+#define ARM64_ATOMIC_FENCE_FIX mono_llvm_build_fence (builder, LLVM_BARRIER_SEQ)
+#else
+#define ARM64_ATOMIC_FENCE_FIX
+#endif
+
 		case OP_ATOMIC_EXCHANGE_I4:
 		case OP_ATOMIC_EXCHANGE_I8: {
 			LLVMValueRef args [2];
@@ -5390,7 +5434,9 @@ process_bb (EmitContext *ctx, MonoBasicBlock *bb)
 			args [0] = convert (ctx, lhs, LLVMPointerType (t, 0));
 			args [1] = convert (ctx, rhs, t);
 
+			ARM64_ATOMIC_FENCE_FIX;
 			values [ins->dreg] = mono_llvm_build_atomic_rmw (builder, LLVM_ATOMICRMW_OP_XCHG, args [0], args [1]);
+			ARM64_ATOMIC_FENCE_FIX;
 			break;
 		}
 		case OP_ATOMIC_ADD_I4:
@@ -5407,7 +5453,9 @@ process_bb (EmitContext *ctx, MonoBasicBlock *bb)
 
 			args [0] = convert (ctx, lhs, LLVMPointerType (t, 0));
 			args [1] = convert (ctx, rhs, t);
+			ARM64_ATOMIC_FENCE_FIX;
 			values [ins->dreg] = LLVMBuildAdd (builder, mono_llvm_build_atomic_rmw (builder, LLVM_ATOMICRMW_OP_ADD, args [0], args [1]), args [1], dname);
+			ARM64_ATOMIC_FENCE_FIX;
 			break;
 		}
 		case OP_ATOMIC_CAS_I4:
@@ -5425,7 +5473,9 @@ process_bb (EmitContext *ctx, MonoBasicBlock *bb)
 			args [1] = convert (ctx, values [ins->sreg3], t);
 			/* new value */
 			args [2] = convert (ctx, values [ins->sreg2], t);
+			ARM64_ATOMIC_FENCE_FIX;
 			val = mono_llvm_build_cmpxchg (builder, args [0], args [1], args [2]);
+			ARM64_ATOMIC_FENCE_FIX;
 			/* cmpxchg returns a pair */
 			values [ins->dreg] = LLVMBuildExtractValue (builder, val, 0, "");
 			break;
@@ -5466,7 +5516,9 @@ process_bb (EmitContext *ctx, MonoBasicBlock *bb)
 
 			addr = convert (ctx, addr, LLVMPointerType (t, 0));
 
+			ARM64_ATOMIC_FENCE_FIX;
 			values [ins->dreg] = emit_load_general (ctx, bb, &builder, size, addr, lhs, dname, is_volatile, barrier);
+			ARM64_ATOMIC_FENCE_FIX;
 
 			if (sext)
 				values [ins->dreg] = LLVMBuildSExt (builder, values [ins->dreg], LLVMInt32Type (), dname);
@@ -5514,7 +5566,9 @@ process_bb (EmitContext *ctx, MonoBasicBlock *bb)
 			addr = LLVMBuildGEP (builder, convert (ctx, base, LLVMPointerType (t, 0)), &index, 1, "");
 			value = convert (ctx, values [ins->sreg1], t);
 
+			ARM64_ATOMIC_FENCE_FIX;
 			emit_store_general (ctx, bb, &builder, size, value, addr, base, is_volatile, barrier);
+			ARM64_ATOMIC_FENCE_FIX;
 			break;
 		}
 		case OP_RELAXED_NOP: {
@@ -6521,7 +6575,7 @@ process_bb (EmitContext *ctx, MonoBasicBlock *bb)
 
 		/* Convert the value to the type required by phi nodes */
 		if (spec [MONO_INST_DEST] != ' ' && !MONO_IS_STORE_MEMBASE (ins) && ctx->vreg_types [ins->dreg]) {
-			if (!values [ins->dreg])
+			if (ctx->is_vphi [ins->dreg])
 				/* vtypes */
 				values [ins->dreg] = addresses [ins->dreg];
 			else
@@ -6670,6 +6724,7 @@ free_ctx (EmitContext *ctx)
 	g_free (ctx->values);
 	g_free (ctx->addresses);
 	g_free (ctx->vreg_types);
+	g_free (ctx->is_vphi);
 	g_free (ctx->vreg_cli_types);
 	g_free (ctx->is_dead);
 	g_free (ctx->unreachable);
@@ -6730,6 +6785,7 @@ mono_llvm_emit_method (MonoCompile *cfg)
 	 */
 	ctx->addresses = g_new0 (LLVMValueRef, cfg->next_vreg);
 	ctx->vreg_types = g_new0 (LLVMTypeRef, cfg->next_vreg);
+	ctx->is_vphi = g_new0 (gboolean, cfg->next_vreg);
 	ctx->vreg_cli_types = g_new0 (MonoType*, cfg->next_vreg);
 	ctx->phi_values = g_ptr_array_sized_new (256);
 	/* 
@@ -7078,8 +7134,11 @@ emit_method_inner (EmitContext *ctx)
 				for (i = 0; i < ins->inst_phi_args [0]; i++) {
 					int sreg1 = ins->inst_phi_args [i + 1];
 					
-					if (sreg1 != -1)
+					if (sreg1 != -1) {
+						if (ins->opcode == OP_VPHI)
+							ctx->is_vphi [sreg1] = TRUE;
 						ctx->vreg_types [sreg1] = phi_type;
+					}
 				}
 				break;
 				}
@@ -7241,7 +7300,11 @@ emit_method_inner (EmitContext *ctx)
 		ctx->module->max_method_idx = MAX (ctx->module->max_method_idx, cfg->method_index);
 
 		// FIXME: beforefieldinit
-		if (ctx->has_got_access || mono_class_get_cctor (cfg->method->klass)) {
+		/*
+		 * NATIVE_TO_MANAGED methods might be called on a thread not attached to the runtime, so they are initialized when loaded
+		 * in load_method ().
+		 */
+		if ((ctx->has_got_access || mono_class_get_cctor (cfg->method->klass)) && !(cfg->method->wrapper_type == MONO_WRAPPER_NATIVE_TO_MANAGED)) {
 			/*
 			 * linkonce methods shouldn't have initialization,
 			 * because they might belong to assemblies which
@@ -8332,7 +8395,7 @@ mono_llvm_create_aot_module (MonoAssembly *assembly, const char *global_prefix, 
 	module->llvm_only = llvm_only;
 	/* The first few entries are reserved */
 	module->max_got_offset = 16;
-	module->context = LLVMContextCreate ();
+	module->context = LLVMGetGlobalContext ();
 
 	if (llvm_only)
 		/* clang ignores our debug info because it has an invalid version */
@@ -8585,7 +8648,7 @@ emit_aot_file_info (MonoLLVMModule *module)
 	if (info->trampoline_size [0]) {
 		fields [tindex ++] = AddJitGlobal (module, eltype, "specific_trampolines");
 		fields [tindex ++] = AddJitGlobal (module, eltype, "static_rgctx_trampolines");
-		fields [tindex ++] = AddJitGlobal (module, eltype, "imt_thunks");
+		fields [tindex ++] = AddJitGlobal (module, eltype, "imt_trampolines");
 		fields [tindex ++] = AddJitGlobal (module, eltype, "gsharedvt_arg_trampolines");
 	} else {
 		fields [tindex ++] = LLVMConstNull (eltype);
@@ -9140,3 +9203,27 @@ default_mono_llvm_unhandled_exception (void)
  *   code.
  * - use pointer types to help optimizations.
  */
+
+#else /* DISABLE_JIT */
+
+void
+mono_llvm_cleanup (void)
+{
+}
+
+void
+mono_llvm_free_domain_info (MonoDomain *domain)
+{
+}
+
+void
+mono_llvm_init (void)
+{
+}
+
+void
+default_mono_llvm_unhandled_exception (void)
+{
+}
+
+#endif /* DISABLE_JIT */

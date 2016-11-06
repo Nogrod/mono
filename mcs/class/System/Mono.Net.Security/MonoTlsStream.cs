@@ -34,7 +34,6 @@ using MonoSecurity::Mono.Security.Interface;
 #else
 using Mono.Security.Interface;
 #endif
-using XX509CertificateCollection = System.Security.Cryptography.X509Certificates.X509CertificateCollection;
 #endif
 
 using System;
@@ -76,7 +75,7 @@ namespace Mono.Net.Security
 		}
 
 #if SECURITY_DEP
-		readonly ChainValidationHelper validationHelper;
+//		readonly ChainValidationHelper validationHelper;
 		readonly MonoTlsSettings settings;
 
 		public MonoTlsStream (HttpWebRequest request, NetworkStream networkStream)
@@ -88,7 +87,7 @@ namespace Mono.Net.Security
 			provider = request.TlsProvider ?? MonoTlsProviderFactory.GetProviderInternal ();
 			status = WebExceptionStatus.SecureChannelFailure;
 
-			validationHelper = ChainValidationHelper.Create (provider.Provider, ref settings, this);
+			/*validationHelper =*/ ChainValidationHelper.Create (provider.Provider, ref settings, this);
 		}
 
 		internal Stream CreateStream (byte[] buffer)
@@ -102,7 +101,7 @@ namespace Mono.Net.Security
 					ServicePointManager.CheckCertificateRevocationList);
 
 				status = WebExceptionStatus.Success;
-			} catch (Exception ex) {
+			} catch (Exception) {
 				status = WebExceptionStatus.SecureChannelFailure;
 				throw;
 			} finally {

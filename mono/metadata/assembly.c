@@ -16,10 +16,13 @@
 #include <string.h>
 #include <stdlib.h>
 #include "assembly.h"
+#include "assembly-internals.h"
 #include "image.h"
+#include "image-internals.h"
 #include "object-internals.h"
 #include <mono/metadata/loader.h>
 #include <mono/metadata/tabledefs.h>
+#include <mono/metadata/custom-attrs-internals.h>
 #include <mono/metadata/metadata-internals.h>
 #include <mono/metadata/profiler-private.h>
 #include <mono/metadata/class-internals.h>
@@ -203,13 +206,15 @@ static GSList *loaded_assembly_bindings = NULL;
 
 /* Class lazy loading functions */
 static GENERATE_TRY_GET_CLASS_WITH_CACHE (internals_visible, System.Runtime.CompilerServices, InternalsVisibleToAttribute)
-
 static MonoAssembly*
 mono_assembly_invoke_search_hook_internal (MonoAssemblyName *aname, MonoAssembly *requesting, gboolean refonly, gboolean postload);
 static MonoAssembly*
 mono_assembly_load_full_internal (MonoAssemblyName *aname, MonoAssembly *requesting, const char *basedir, MonoImageOpenStatus *status, gboolean refonly);
 static MonoBoolean
 mono_assembly_is_in_gac (const gchar *filanem);
+
+static MonoAssembly*
+prevent_reference_assembly_from_running (MonoAssembly* candidate, gboolean refonly);
 
 static gchar*
 encode_public_tok (const guchar *token, gint32 len)
@@ -554,6 +559,21 @@ G_CONST_RETURN gchar *
 mono_assembly_getrootdir (void)
 {
 	return default_path [0];
+}
+
+/**
+ * mono_native_getrootdir:
+ * 
+ * Obtains the root directory used for looking up native libs (.so, .dylib).
+ *
+ * Returns: a string with the directory, this string should be freed by
+ * the caller.
+ */
+gchar *
+mono_native_getrootdir (void)
+{
+	gchar* fullpath = g_build_path (G_DIR_SEPARATOR_S, mono_assembly_getrootdir (), mono_config_get_reloc_lib_dir(), NULL);
+	return fullpath;
 }
 
 /**
@@ -1190,6 +1210,7 @@ mono_assembly_load_reference (MonoImage *image, int index)
 				   aname.major, aname.minor, aname.build, aname.revision,
 				   strlen ((char*)aname.public_key_token) == 0 ? "(none)" : (char*)aname.public_key_token, extra_msg);
 		g_free (extra_msg);
+
 	}
 
 	mono_assemblies_lock ();
@@ -1544,8 +1565,9 @@ mono_assembly_open_from_bundle (const char *filename, MonoImageOpenStatus *statu
 {
 	int i;
 	char *name;
+	gchar *lowercase_filename;
 	MonoImage *image = NULL;
-
+	gboolean is_satellite = FALSE;
 	/*
 	 * we do a very simple search for bundled assemblies: it's not a general 
 	 * purpose assembly loading mechanism.
@@ -1554,11 +1576,13 @@ mono_assembly_open_from_bundle (const char *filename, MonoImageOpenStatus *statu
 	if (!bundles)
 		return NULL;
 
+	lowercase_filename = g_utf8_strdown (filename, -1);
+	is_satellite = g_str_has_suffix (lowercase_filename, ".resources.dll");
+	g_free (lowercase_filename);
 	name = g_path_get_basename (filename);
-
 	mono_assemblies_lock ();
 	for (i = 0; !image && bundles [i]; ++i) {
-		if (strcmp (bundles [i]->name, name) == 0) {
+		if (strcmp (bundles [i]->name, is_satellite ? filename : name) == 0) {
 			image = mono_image_open_from_data_with_name ((char*)bundles [i]->data, bundles [i]->size, FALSE, status, refonly, name);
 			break;
 		}
@@ -1566,7 +1590,7 @@ mono_assembly_open_from_bundle (const char *filename, MonoImageOpenStatus *statu
 	mono_assemblies_unlock ();
 	if (image) {
 		mono_image_addref (image);
-		mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_ASSEMBLY, "Assembly Loader loaded assembly from bundle: '%s'.", name);
+		mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_ASSEMBLY, "Assembly Loader loaded assembly from bundle: '%s'.", is_satellite ? filename : name);
 		g_free (name);
 		return image;
 	}
@@ -1743,7 +1767,7 @@ mono_assembly_load_friends (MonoAssembly* ass)
 	if (ass->friend_assembly_names_inited)
 		return;
 
-	attrs = mono_custom_attrs_from_assembly_checked (ass, &error);
+	attrs = mono_custom_attrs_from_assembly_checked (ass, FALSE, &error);
 	mono_error_assert_ok (&error);
 	if (!attrs) {
 		mono_assemblies_lock ();
@@ -1801,6 +1825,50 @@ mono_assembly_load_friends (MonoAssembly* ass)
 	mono_memory_barrier ();
 	ass->friend_assembly_names_inited = TRUE;
 	mono_assemblies_unlock ();
+}
+
+struct HasReferenceAssemblyAttributeIterData {
+	gboolean has_attr;
+};
+
+static gboolean
+has_reference_assembly_attribute_iterator (MonoImage *image, guint32 typeref_scope_token, const char *nspace, const char *name, guint32 method_token, gpointer user_data)
+{
+	gboolean stop_scanning = FALSE;
+	struct HasReferenceAssemblyAttributeIterData *iter_data = (struct HasReferenceAssemblyAttributeIterData*)user_data;
+
+	if (!strcmp (name, "ReferenceAssemblyAttribute") && !strcmp (nspace, "System.Runtime.CompilerServices")) {
+		/* Note we don't check the assembly name, same as coreCLR. */
+		iter_data->has_attr = TRUE;
+		stop_scanning = TRUE;
+	}
+
+	return stop_scanning;
+}
+
+/**
+ * mono_assembly_has_reference_assembly_attribute:
+ * @assembly: a MonoAssembly
+ * @error: set on error.
+ *
+ * Returns TRUE if @assembly has the System.Runtime.CompilerServices.ReferenceAssemblyAttribute set.
+ * On error returns FALSE and sets @error.
+ */
+gboolean
+mono_assembly_has_reference_assembly_attribute (MonoAssembly *assembly, MonoError *error)
+{
+	mono_error_init (error);
+
+	/*
+	 * This might be called during assembly loading, so do everything using the low-level
+	 * metadata APIs.
+	 */
+
+	struct HasReferenceAssemblyAttributeIterData iter_data = { FALSE };
+
+	mono_assembly_metadata_foreach_custom_attr (assembly, &has_reference_assembly_attribute_iterator, &iter_data);
+
+	return iter_data.has_attr;
 }
 
 /**
@@ -1922,10 +1990,30 @@ mono_assembly_load_from_full (MonoImage *image, const char*fname,
 		}
 	}
 
+	/* We need to check for ReferenceAssmeblyAttribute before we
+	 * mark the assembly as loaded and before we fire the load
+	 * hook. Otherwise mono_domain_fire_assembly_load () in
+	 * appdomain.c will cache a mapping from the assembly name to
+	 * this image and we won't be able to look for a different
+	 * candidate. */
+
+	if (!refonly) {
+		MonoError refasm_error;
+		if (mono_assembly_has_reference_assembly_attribute (ass, &refasm_error)) {
+			mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_ASSEMBLY, "Image for assembly '%s' (%s) has ReferenceAssemblyAttribute, skipping", ass->aname.name, image->name);
+			g_free (ass);
+			g_free (base_dir);
+			mono_image_close (image);
+			*status = MONO_IMAGE_IMAGE_INVALID;
+			return NULL;
+		}
+		mono_error_cleanup (&refasm_error);
+	}
+
 	mono_assemblies_lock ();
 
 	if (image->assembly) {
-		/* 
+		/*
 		 * This means another thread has already loaded the assembly, but not yet
 		 * called the load hooks so the search hook can't find the assembly.
 		 */
@@ -1937,6 +2025,8 @@ mono_assembly_load_from_full (MonoImage *image, const char*fname,
 		*status = MONO_IMAGE_OK;
 		return ass2;
 	}
+
+	mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_ASSEMBLY, "Prepared to set up assembly '%s' (%s)", ass->aname.name, image->name);
 
 	image->assembly = ass;
 
@@ -2306,11 +2396,11 @@ mono_assembly_name_parse_full (const char *name, MonoAssemblyName *aname, gboole
 			if (!g_ascii_strcasecmp (retargetable, "yes")) {
 				flags |= ASSEMBLYREF_RETARGETABLE_FLAG;
 			} else if (g_ascii_strcasecmp (retargetable, "no")) {
-				free (retargetable_uq);
+				g_free (retargetable_uq);
 				goto cleanup_and_fail;
 			}
 
-			free (retargetable_uq);
+			g_free (retargetable_uq);
 			tmp++;
 			continue;
 		}
@@ -2330,11 +2420,11 @@ mono_assembly_name_parse_full (const char *name, MonoAssemblyName *aname, gboole
 			else if (!g_ascii_strcasecmp (procarch, "AMD64"))
 				arch = MONO_PROCESSOR_ARCHITECTURE_AMD64;
 			else {
-				free (procarch_uq);
+				g_free (procarch_uq);
 				goto cleanup_and_fail;
 			}
 
-			free (procarch_uq);
+			g_free (procarch_uq);
 			tmp++;
 			continue;
 		}
@@ -2362,11 +2452,11 @@ mono_assembly_name_parse_full (const char *name, MonoAssemblyName *aname, gboole
 		key_uq == NULL ? key : key_uq,
 		flags, arch, aname, save_public_key);
 
-	free (dllname_uq);
-	free (version_uq);
-	free (culture_uq);
-	free (token_uq);
-	free (key_uq);
+	g_free (dllname_uq);
+	g_free (version_uq);
+	g_free (culture_uq);
+	g_free (token_uq);
+	g_free (key_uq);
 
 	g_strfreev (parts);
 	return res;
@@ -3141,6 +3231,19 @@ return_corlib_and_facades:
 	return corlib;
 }
 
+static MonoAssembly*
+prevent_reference_assembly_from_running (MonoAssembly* candidate, gboolean refonly)
+{
+	MonoError refasm_error;
+	mono_error_init (&refasm_error);
+	if (candidate && !refonly && mono_assembly_has_reference_assembly_attribute (candidate, &refasm_error)) {
+		candidate = NULL;
+	}
+	mono_error_cleanup (&refasm_error);
+	return candidate;
+}
+
+
 MonoAssembly*
 mono_assembly_load_full_nosearch (MonoAssemblyName *aname, 
 								  const char       *basedir, 
@@ -3222,9 +3325,11 @@ mono_assembly_load_full_internal (MonoAssemblyName *aname, MonoAssembly *request
 {
 	MonoAssembly *result = mono_assembly_load_full_nosearch (aname, basedir, status, refonly);
 
-	if (!result)
+	if (!result) {
 		/* Try a postload search hook */
 		result = mono_assembly_invoke_search_hook_internal (aname, requesting, refonly, TRUE);
+		result = prevent_reference_assembly_from_running (result, refonly);
+	}
 	return result;
 }
 
@@ -3398,8 +3503,18 @@ mono_assembly_close (MonoAssembly *assembly)
 MonoImage*
 mono_assembly_load_module (MonoAssembly *assembly, guint32 idx)
 {
-	return mono_image_load_file_for_image (assembly->image, idx);
+	MonoError error;
+	MonoImage *result = mono_assembly_load_module_checked (assembly, idx, &error);
+	mono_error_assert_ok (&error);
+	return result;
 }
+
+MONO_API MonoImage*
+mono_assembly_load_module_checked (MonoAssembly *assembly, uint32_t idx, MonoError *error)
+{
+	return mono_image_load_file_for_image_checked (assembly->image, idx, error);
+}
+
 
 /**
  * mono_assembly_foreach:

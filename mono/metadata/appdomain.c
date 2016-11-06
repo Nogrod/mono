@@ -58,6 +58,7 @@
 #include <mono/metadata/tokentype.h>
 #include <mono/metadata/profiler-private.h>
 #include <mono/metadata/reflection-internals.h>
+#include <mono/metadata/abi-details.h>
 #include <mono/utils/mono-uri.h>
 #include <mono/utils/mono-logger-internals.h>
 #include <mono/utils/mono-path.h>
@@ -67,7 +68,7 @@
 #include <mono/utils/atomic.h>
 #include <mono/utils/mono-memory-model.h>
 #include <mono/utils/mono-threads.h>
-#include <mono/utils/w32handle.h>
+#include <mono/metadata/w32handle.h>
 #ifdef HOST_WIN32
 #include <direct.h>
 #endif
@@ -83,7 +84,7 @@
  * Changes which are already detected at runtime, like the addition
  * of icalls, do not require an increment.
  */
-#define MONO_CORLIB_VERSION 152
+#define MONO_CORLIB_VERSION 162
 
 typedef struct
 {
@@ -343,8 +344,14 @@ mono_check_corlib_version (void)
 	int version = mono_get_corlib_version ();
 	if (version != MONO_CORLIB_VERSION)
 		return g_strdup_printf ("expected corlib version %d, found %d.", MONO_CORLIB_VERSION, version);
-	else
-		return NULL;
+
+	/* Check that the managed and unmanaged layout of MonoInternalThread matches */
+	guint32 native_offset = (guint32) MONO_STRUCT_OFFSET (MonoInternalThread, last);
+	guint32 managed_offset = mono_field_get_offset (mono_class_get_field_from_name (mono_defaults.internal_thread_class, "last"));
+	if (native_offset != managed_offset)
+		return g_strdup_printf ("expected InternalThread.last field offset %u, found %u. See InternalThread.last comment", native_offset, managed_offset);
+
+	return NULL;
 }
 
 /**
@@ -1408,7 +1415,12 @@ shadow_copy_sibling (gchar *src, gint srclen, const char *extension, gchar *targ
 	dest = g_utf8_to_utf16 (target, strlen (target), NULL, NULL, NULL);
 	
 	DeleteFile (dest);
+
+#if G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT)
 	copy_result = CopyFile (orig, dest, FALSE);
+#else
+	copy_result = SUCCEEDED (CopyFile2 (orig, dest, NULL));
+#endif
 
 	/* Fix for bug #556884 - make sure the files have the correct mode so that they can be
 	 * overwritten when updated in their original locations. */
@@ -1736,7 +1748,11 @@ mono_make_shadow_copy (const char *filename, MonoError *oerror)
 		return (char *)filename;
 	}
 
+#if G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT)
 	copy_result = CopyFile (orig, dest, FALSE);
+#else
+	copy_result = SUCCEEDED (CopyFile2 (orig, dest, NULL));
+#endif
 
 	/* Fix for bug #556884 - make sure the files have the correct mode so that they can be
 	 * overwritten when updated in their original locations. */
@@ -1942,37 +1958,37 @@ ves_icall_System_Reflection_Assembly_LoadFrom (MonoString *fname, MonoBoolean re
 	MonoDomain *domain = mono_domain_get ();
 	char *name, *filename;
 	MonoImageOpenStatus status = MONO_IMAGE_OK;
-	MonoAssembly *ass;
+	MonoAssembly *ass = NULL;
+
+	name = NULL;
+	result = NULL;
+
+	mono_error_init (&error);
 
 	if (fname == NULL) {
-		MonoException *exc = mono_get_exception_argument_null ("assemblyFile");
-		mono_set_pending_exception (exc);
-		return NULL;
+		mono_error_set_argument_null (&error, "assemblyFile", "");
+		goto leave;
 	}
 		
 	name = filename = mono_string_to_utf8_checked (fname, &error);
-	if (mono_error_set_pending_exception (&error))
-		return NULL;
+	if (!is_ok (&error))
+		goto leave;
 	
 	ass = mono_assembly_open_full (filename, &status, refOnly);
 	
 	if (!ass) {
-		MonoException *exc;
-
 		if (status == MONO_IMAGE_IMAGE_INVALID)
-			exc = mono_get_exception_bad_image_format2 (NULL, fname);
+			mono_error_set_bad_image_name (&error, name, "");
 		else
-			exc = mono_get_exception_file_not_found2 (NULL, fname);
-		g_free (name);
-		mono_set_pending_exception (exc);
-		return NULL;
+			mono_error_set_exception_instance (&error, mono_get_exception_file_not_found2 (NULL, fname));
+		goto leave;
 	}
 
-	g_free (name);
-
 	result = mono_assembly_get_object_checked (domain, ass, &error);
-	if (!result)
-		mono_error_set_pending_exception (&error);
+
+leave:
+	mono_error_set_pending_exception (&error);
+	g_free (name);
 	return result;
 }
 
@@ -2024,7 +2040,7 @@ ves_icall_System_AppDomain_LoadAssembly (MonoAppDomain *ad,  MonoString *assRef,
 	MonoAssembly *ass;
 	MonoAssemblyName aname;
 	MonoReflectionAssembly *refass = NULL;
-	gchar *name;
+	gchar *name = NULL;
 	gboolean parsed;
 
 	g_assert (assRef);
@@ -2033,16 +2049,13 @@ ves_icall_System_AppDomain_LoadAssembly (MonoAppDomain *ad,  MonoString *assRef,
 	if (mono_error_set_pending_exception (&error))
 		return NULL;
 	parsed = mono_assembly_name_parse (name, &aname);
-	g_free (name);
 
 	if (!parsed) {
 		/* This is a parse error... */
 		if (!refOnly) {
 			refass = mono_try_assembly_resolve (domain, assRef, NULL, refOnly, &error);
-			if (!mono_error_ok (&error)) {
-				mono_error_set_pending_exception (&error);
-				return NULL;
-			}
+			if (!is_ok (&error))
+				goto leave;
 		}
 		return refass;
 	}
@@ -2054,25 +2067,28 @@ ves_icall_System_AppDomain_LoadAssembly (MonoAppDomain *ad,  MonoString *assRef,
 		/* MS.NET doesn't seem to call the assembly resolve handler for refonly assemblies */
 		if (!refOnly) {
 			refass = mono_try_assembly_resolve (domain, assRef, NULL, refOnly, &error);
-			if (!mono_error_ok (&error)) {
-				mono_error_set_pending_exception (&error);
-				return NULL;
-			}
+			if (!is_ok (&error))
+				goto leave;
 		}
 		else
 			refass = NULL;
-		if (!refass) {
-			return NULL;
-		}
+		if (!refass)
+			goto leave;
+		ass = refass->assembly;
 	}
 
-	if (refass == NULL)
+	g_assert (ass);
+	if (refass == NULL) {
 		refass = mono_assembly_get_object_checked (domain, ass, &error);
+		if (!is_ok (&error))
+			goto leave;
+	}
 
-	if (refass == NULL)
-		mono_error_set_pending_exception (&error);
-	else
-		MONO_OBJECT_SETREF (refass, evidence, evidence);
+	MONO_OBJECT_SETREF (refass, evidence, evidence);
+
+leave:
+	g_free (name);
+	mono_error_set_pending_exception (&error);
 	return refass;
 }
 
@@ -2464,13 +2480,13 @@ mono_domain_unload (MonoDomain *domain)
 	mono_domain_try_unload (domain, &exc);
 }
 
-static guint32
-guarded_wait (HANDLE handle, guint32 timeout, gboolean alertable)
+static MonoThreadInfoWaitRet
+guarded_wait (MonoThreadHandle *thread_handle, guint32 timeout, gboolean alertable)
 {
-	guint32 result;
+	MonoThreadInfoWaitRet result;
 
 	MONO_ENTER_GC_SAFE;
-	result = WaitForSingleObjectEx (handle, timeout, alertable);
+	result = mono_thread_info_wait_one_handle (thread_handle, timeout, alertable);
 	MONO_EXIT_GC_SAFE;
 
 	return result;
@@ -2499,13 +2515,12 @@ void
 mono_domain_try_unload (MonoDomain *domain, MonoObject **exc)
 {
 	MonoError error;
-	HANDLE thread_handle;
+	MonoThreadHandle *thread_handle;
 	MonoAppDomainState prev_state;
 	MonoMethod *method;
 	unload_data *thread_data;
 	MonoNativeThreadId tid;
 	MonoDomain *caller_domain = mono_domain_get ();
-	MonoThreadParm tp;
 
 	/* printf ("UNLOAD STARTING FOR %s (%p) IN THREAD 0x%x.\n", domain->friendly_name, domain, mono_native_thread_id_get ()); */
 
@@ -2562,25 +2577,22 @@ mono_domain_try_unload (MonoDomain *domain, MonoObject **exc)
 	 * First we create a separate thread for unloading, since
 	 * we might have to abort some threads, including the current one.
 	 */
-	tp.priority = MONO_THREAD_PRIORITY_NORMAL;
-	tp.stack_size = 0;
-	tp.creation_flags = CREATE_SUSPENDED;
-	thread_handle = mono_threads_create_thread (unload_thread_main, thread_data, &tp, &tid);
+	thread_handle = mono_threads_create_thread (unload_thread_main, thread_data, NULL, &tid);
 	if (thread_handle == NULL)
 		return;
-	mono_thread_info_resume (tid);
 
 	/* Wait for the thread */	
-	while (!thread_data->done && guarded_wait (thread_handle, INFINITE, TRUE) == WAIT_IO_COMPLETION) {
+	while (!thread_data->done && guarded_wait (thread_handle, INFINITE, TRUE) == MONO_THREAD_INFO_WAIT_RET_ALERTED) {
 		if (mono_thread_internal_has_appdomain_ref (mono_thread_internal_current (), domain) && (mono_thread_interruption_requested ())) {
 			/* The unload thread tries to abort us */
 			/* The icall wrapper will execute the abort */
-			CloseHandle (thread_handle);
+			mono_threads_close_thread_handle (thread_handle);
 			unload_data_unref (thread_data);
 			return;
 		}
 	}
-	CloseHandle (thread_handle);
+
+	mono_threads_close_thread_handle (thread_handle);
 
 	if (thread_data->failure_reason) {
 		/* Roll back the state change */

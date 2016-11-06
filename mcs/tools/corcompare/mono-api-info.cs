@@ -1089,9 +1089,12 @@ namespace CorCompare
 			if (!(memberDefenition is MethodDefinition))
 				return;
 
-			MethodDefinition mbase = (MethodDefinition) memberDefenition;
+			MethodDefinition mbase = (MethodDefinition)memberDefenition;
 
-			ParameterData parms = new ParameterData (writer, mbase.Parameters);
+			ParameterData parms = new ParameterData (writer, mbase.Parameters) {
+				HasExtensionParameter = mbase.CustomAttributes.Any (l => l.AttributeType.FullName == "System.Runtime.CompilerServices.ExtensionAttribute")
+			};
+
 			parms.DoOutput ();
 
 			MemberData.OutputGenericParameters (writer, mbase);
@@ -1137,8 +1140,11 @@ namespace CorCompare
 			this.parameters = parameters;
 		}
 
+		public bool HasExtensionParameter { get; set; }
+
 		public override void DoOutput ()
 		{
+			bool first = true;
 			writer.WriteStartElement ("parameters");
 			foreach (ParameterDefinition parameter in parameters) {
 				writer.WriteStartElement ("parameter");
@@ -1146,13 +1152,17 @@ namespace CorCompare
 				AddAttribute ("position", parameter.Method.Parameters.IndexOf(parameter).ToString(CultureInfo.InvariantCulture));
 				AddAttribute ("attrib", ((int) parameter.Attributes).ToString());
 
-				string direction = "in";
+				string direction = first && HasExtensionParameter ? "this" : "in";
+				first = false;
 
-				if (parameter.ParameterType is ByReferenceType)
+				var pt = parameter.ParameterType;
+				var brt = pt as ByReferenceType;
+				if (brt != null) {
 					direction = parameter.IsOut ? "out" : "ref";
+					pt = brt.ElementType;
+				}
 
-				TypeReference t = parameter.ParameterType;
-				AddAttribute ("type", Utils.CleanupTypeName (t));
+				AddAttribute ("type", Utils.CleanupTypeName (pt));
 
 				if (parameter.IsOptional) {
 					AddAttribute ("optional", "true");
@@ -1531,13 +1541,15 @@ namespace CorCompare
 
 				ParameterDefinition info = infos [i];
 
+				string modifier = string.Empty;
 				if (info.ParameterType.IsByReference) {
-					string modifier;
-					if ((info.Attributes & (ParameterAttributes.Out | ParameterAttributes.In)) == ParameterAttributes.Out)
+					if ((info.Attributes & ParameterAttributes.In) != 0)
+						modifier = "in";
+					else if ((info.Attributes & ParameterAttributes.Out) != 0)
 						modifier = "out";
-					else
-						modifier = "ref";
+				}
 
+				if (modifier.Length > 0) {
 					signature.Append (modifier);
 					signature.Append (" ");
 				}

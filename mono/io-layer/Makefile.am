@@ -11,20 +11,15 @@ AM_CPPFLAGS = \
 libwapiincludedir = $(includedir)/mono-$(API_VER)/mono/io-layer
 
 OTHER_H = \
-	access.h	\
 	context.h	\
 	error.h		\
-	events.h	\
 	io.h		\
 	io-trace.h	\
 	io-layer.h	\
 	io-portability.h	\
 	macros.h	\
 	messages.h	\
-	mutexes.h	\
-	processes.h	\
 	security.h	\
-	semaphores.h	\
 	sockets.h	\
 	status.h	\
 	timefuncs.h	\
@@ -36,14 +31,10 @@ OTHER_H = \
 	wapi-remap.h
 
 OTHER_SRC = \
-	access.h		\
 	context.c		\
 	context.h		\
 	error.c			\
 	error.h			\
-	events.c		\
-	events.h		\
-	event-private.h		\
 	io.c			\
 	io.h			\
 	io-portability.c	\
@@ -54,20 +45,9 @@ OTHER_SRC = \
 	macros.h		\
 	messages.c		\
 	messages.h		\
-	mutexes.c		\
-	mutexes.h		\
-	mutex-private.h		\
 	posix.c			\
-	processes.c		\
-	processes.h		\
-	process-private.h	\
 	security.c		\
 	security.h		\
-	semaphores.c		\
-	semaphores.h		\
-	semaphore-private.h	\
-	shared.c		\
-	shared.h		\
 	sockets.c		\
 	sockets.h		\
 	socket-private.h	\
@@ -75,7 +55,6 @@ OTHER_SRC = \
 	status.h		\
 	timefuncs.c		\
 	timefuncs.h		\
-	timefuncs-private.h	\
 	types.h			\
 	uglify.h		\
 	versioninfo.c		\

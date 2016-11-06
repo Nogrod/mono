@@ -9,7 +9,7 @@ using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
 using System.Reflection.Emit;
 
-public class Tests {
+public unsafe class Tests {
 
 	public int int_field;
 
@@ -1903,6 +1903,41 @@ public class Tests {
 			return 1;
 		else
 			return 0;
+	}
+
+    [StructLayout(LayoutKind.Explicit, Size = 12)]
+	public struct FixedArrayStruct {
+        [FieldOffset(0)]
+        public fixed int array[3];
+	}
+
+	[DllImport ("libtest", EntryPoint="mono_test_marshal_fixed_array")]
+	public static extern int mono_test_marshal_fixed_array (FixedArrayStruct s);
+
+	public static unsafe int test_6_fixed_array_struct () {
+		var s = new FixedArrayStruct ();
+		s.array [0] = 1;
+		s.array [1] = 2;
+		s.array [2] = 3;
+
+		return mono_test_marshal_fixed_array (s);
+	}
+
+	[DllImport ("libtest", EntryPoint="mono_test_marshal_pointer_array")]
+	public static extern int mono_test_marshal_pointer_array (int*[] arr);
+
+	public static unsafe int test_0_pointer_array () {
+		var arr = new int [10];
+		for (int i = 0; i < arr.Length; i++)
+			arr [i] = -1;
+		var arr2 = new int*[10];
+		for (int i = 0; i < arr2.Length; i++) {
+			GCHandle handle = GCHandle.Alloc(arr[i], GCHandleType.Pinned);
+			fixed (int *ptr = &arr[i]) {
+				arr2[i] = ptr;
+			}
+		}
+		return mono_test_marshal_pointer_array (arr2);
 	}
 }
 

@@ -39,9 +39,6 @@ struct _SgenClientThreadInfo {
 	gboolean skip, suspend_done;
 	volatile int in_critical_region;
 
-	gpointer stopped_ip;	/* only valid if the thread is stopped */
-	MonoDomain *stopped_domain; /* dsto */
-
 	/*
 	This is set the argument of mono_gc_set_skip_thread.
 
@@ -84,6 +81,7 @@ extern void mono_sgen_init_stw (void);
 
 enum {
 	INTERNAL_MEM_EPHEMERON_LINK = INTERNAL_MEM_FIRST_CLIENT,
+	INTERNAL_MEM_MOVED_OBJECT,
 	INTERNAL_MEM_MAX
 };
 
@@ -698,11 +696,6 @@ static void G_GNUC_UNUSED
 sgen_client_binary_protocol_pin_stats (int objects_pinned_in_nursery, size_t bytes_pinned_in_nursery, int objects_pinned_in_major, size_t bytes_pinned_in_major)
 {
 }
-
-int sgen_thread_handshake (BOOL suspend);
-gboolean sgen_suspend_thread (SgenThreadInfo *info);
-gboolean sgen_resume_thread (SgenThreadInfo *info);
-void sgen_wait_for_suspend_ack (int count);
 
 #ifdef HAVE_KW_THREAD
 extern __thread SgenThreadInfo *sgen_thread_info;

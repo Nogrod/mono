@@ -12,6 +12,7 @@
 #if defined(USE_WINDOWS_BACKEND)
 
 #include <mono/utils/mono-compiler.h>
+#include <mono/utils/mono-threads-debug.h>
 #include <limits.h>
 
 
@@ -63,13 +64,40 @@ mono_threads_suspend_begin_async_suspend (MonoThreadInfo *info, gboolean interru
 	}
 
 	CloseHandle (handle);
-	return info->suspend_can_continue;
+	return TRUE;
 }
 
 gboolean
 mono_threads_suspend_check_suspend_result (MonoThreadInfo *info)
 {
 	return info->suspend_can_continue;
+}
+
+static void CALLBACK
+abort_apc (ULONG_PTR param)
+{
+	THREADS_INTERRUPT_DEBUG ("%06d - abort_apc () called", GetCurrentThreadId ());
+}
+
+void
+mono_threads_suspend_abort_syscall (MonoThreadInfo *info)
+{
+	DWORD id = mono_thread_info_get_tid (info);
+	HANDLE handle;
+
+	handle = OpenThread (THREAD_ALL_ACCESS, FALSE, id);
+	g_assert (handle);
+
+	THREADS_INTERRUPT_DEBUG ("%06d - Aborting syscall in thread %06d", GetCurrentThreadId (), id);
+	QueueUserAPC ((PAPCFUNC)abort_apc, handle, (ULONG_PTR)NULL);
+
+	CloseHandle (handle);
+}
+
+gboolean
+mono_threads_suspend_needs_abort_syscall (void)
+{
+	return TRUE;
 }
 
 gboolean
@@ -121,8 +149,6 @@ mono_threads_suspend_begin_async_resume (MonoThreadInfo *info)
 void
 mono_threads_suspend_register (MonoThreadInfo *info)
 {
-	g_assert (!info->handle);
-	info->handle = mono_threads_platform_open_handle();
 }
 
 void
@@ -130,92 +156,63 @@ mono_threads_suspend_free (MonoThreadInfo *info)
 {
 }
 
+void
+mono_threads_suspend_init_signals (void)
+{
+}
+
+gint
+mono_threads_suspend_search_alternative_signal (void)
+{
+	g_assert_not_reached ();
+}
+
+gint
+mono_threads_suspend_get_suspend_signal (void)
+{
+	return -1;
+}
+
+gint
+mono_threads_suspend_get_restart_signal (void)
+{
+	return -1;
+}
+
+gint
+mono_threads_suspend_get_abort_signal (void)
+{
+	return -1;
+}
+
 #endif
 
 #if defined (HOST_WIN32)
 
-typedef struct {
-	LPTHREAD_START_ROUTINE start_routine;
-	void *arg;
-	gint32 priority;
-	MonoCoopSem registered;
-	gboolean suspend;
-	HANDLE suspend_event;
-} ThreadStartInfo;
-
-static DWORD WINAPI
-inner_start_thread (LPVOID arg)
+int
+mono_threads_platform_create_thread (MonoThreadStart thread_fn, gpointer thread_data, gsize* const stack_size, MonoNativeThreadId *out_tid)
 {
-	ThreadStartInfo *start_info = arg;
-	void *t_arg = start_info->arg;
-	int post_result;
-	LPTHREAD_START_ROUTINE start_func = start_info->start_routine;
-	DWORD result;
-	gboolean suspend = start_info->suspend;
-	HANDLE suspend_event = start_info->suspend_event;
-	MonoThreadInfo *info;
-
-	info = mono_thread_info_attach (&result);
-	info->runtime_thread = TRUE;
-	info->create_suspended = suspend;
-
-	mono_threads_platform_set_priority(info, start_info->priority);
-
-	mono_coop_sem_post (&(start_info->registered));
-
-	if (suspend) {
-		WaitForSingleObject (suspend_event, INFINITE); /* caller will suspend the thread before setting the event. */
-		CloseHandle (suspend_event);
-	}
-
-	result = start_func (t_arg);
-
-	mono_thread_info_detach ();
-
-	return result;
-}
-
-HANDLE
-mono_threads_platform_create_thread (MonoThreadStart start_routine, gpointer arg, MonoThreadParm *tp, MonoNativeThreadId *out_tid)
-{
-	ThreadStartInfo *start_info;
 	HANDLE result;
 	DWORD thread_id;
-	guint32 creation_flags = tp->creation_flags;
-	int res;
 
-	start_info = g_malloc0 (sizeof (ThreadStartInfo));
-	if (!start_info)
-		return NULL;
-	mono_coop_sem_init (&(start_info->registered), 0);
-	start_info->arg = arg;
-	start_info->priority = tp->priority;
-	start_info->start_routine = start_routine;
-	start_info->suspend = creation_flags & CREATE_SUSPENDED;
-	creation_flags &= ~CREATE_SUSPENDED;
-	if (start_info->suspend) {
-		start_info->suspend_event = CreateEvent (NULL, TRUE, FALSE, NULL);
-		if (!start_info->suspend_event)
-			return NULL;
-	}
+	result = CreateThread (NULL, stack_size ? *stack_size : 0, (LPTHREAD_START_ROUTINE) thread_fn, thread_data, 0, &thread_id);
+	if (!result)
+		return -1;
 
-	result = CreateThread (NULL, tp->stack_size, inner_start_thread, start_info, creation_flags, &thread_id);
-	if (result) {
-		res = mono_coop_sem_wait (&(start_info->registered), MONO_SEM_FLAGS_NONE);
-		g_assert (res != -1);
+	/* A new handle is open when attaching
+	 * the thread, so we don't need this one */
+	CloseHandle (result);
 
-		if (start_info->suspend) {
-			g_assert (SuspendThread (result) != (DWORD)-1);
-			SetEvent (start_info->suspend_event);
-		}
-	} else if (start_info->suspend) {
-		CloseHandle (start_info->suspend_event);
-	}
 	if (out_tid)
 		*out_tid = thread_id;
-	mono_coop_sem_destroy (&(start_info->registered));
-	g_free (start_info);
-	return result;
+
+	if (stack_size) {
+		// TOOD: Use VirtualQuery to get correct value 
+		// http://stackoverflow.com/questions/2480095/thread-stack-size-on-windows-visual-c
+		*stack_size = 2 * 1024 * 1024;
+	}
+
+	return 0;
 }
 
 
@@ -237,15 +234,19 @@ mono_native_thread_create (MonoNativeThreadId *tid, gpointer func, gpointer arg)
 	return CreateThread (NULL, 0, (func), (arg), 0, (tid)) != NULL;
 }
 
-void
-mono_threads_platform_resume_created (MonoThreadInfo *info, MonoNativeThreadId tid)
+gboolean
+mono_native_thread_join (MonoNativeThreadId tid)
 {
 	HANDLE handle;
 
-	handle = OpenThread (THREAD_ALL_ACCESS, TRUE, tid);
-	g_assert (handle);
-	ResumeThread (handle);
+	if (!(handle = OpenThread (THREAD_ALL_ACCESS, TRUE, tid)))
+		return FALSE;
+
+	DWORD res = WaitForSingleObject (handle, INFINITE);
+
 	CloseHandle (handle);
+
+	return res != WAIT_FAILED;
 }
 
 #if HAVE_DECL___READFSDWORD==0
@@ -295,32 +296,9 @@ mono_threads_platform_yield (void)
 }
 
 void
-mono_threads_platform_exit (int exit_code)
+mono_threads_platform_exit (gsize exit_code)
 {
 	ExitThread (exit_code);
-}
-
-void
-mono_threads_platform_unregister (MonoThreadInfo *info)
-{
-}
-
-HANDLE
-mono_threads_platform_open_handle (void)
-{
-	HANDLE thread_handle;
-
-	thread_handle = GetCurrentThread ();
-	g_assert (thread_handle);
-
-	/*
-	 * The handle returned by GetCurrentThread () is a pseudo handle, so it can't be used to
-	 * refer to the thread from other threads for things like aborting.
-	 */
-	DuplicateHandle (GetCurrentProcess (), thread_handle, GetCurrentProcess (), &thread_handle,
-					 THREAD_ALL_ACCESS, TRUE, 0);
-
-	return thread_handle;
 }
 
 int
@@ -328,12 +306,6 @@ mono_threads_get_max_stack_size (void)
 {
 	//FIXME
 	return INT_MAX;
-}
-
-HANDLE
-mono_threads_platform_open_thread_handle (HANDLE handle, MonoNativeThreadId tid)
-{
-	return OpenThread (THREAD_ALL_ACCESS, TRUE, tid);
 }
 
 #if defined(_MSC_VER)
@@ -366,48 +338,6 @@ mono_native_thread_set_name (MonoNativeThreadId tid, const char *name)
 	__except(EXCEPTION_EXECUTE_HANDLER) {
 	}
 #endif
-}
-
-void
-mono_threads_platform_set_exited (MonoThreadInfo *info)
-{
-}
-
-void
-mono_threads_platform_describe (MonoThreadInfo *info, GString *text)
-{
-	/* TODO */
-}
-
-void
-mono_threads_platform_own_mutex (MonoThreadInfo *info, gpointer mutex_handle)
-{
-	g_assert_not_reached ();
-}
-
-void
-mono_threads_platform_disown_mutex (MonoThreadInfo *info, gpointer mutex_handle)
-{
-	g_assert_not_reached ();
-}
-
-MonoThreadPriority
-mono_threads_platform_get_priority (MonoThreadInfo *info)
-{
-	g_assert (info->handle);
-	return GetThreadPriority (info->handle) + 2;
-}
-
-gboolean
-mono_threads_platform_set_priority (MonoThreadInfo *info, MonoThreadPriority priority)
-{
-	g_assert (info->handle);
-	return SetThreadPriority (info->handle, priority - 2);
-}
-
-void
-mono_threads_platform_init (void)
-{
 }
 
 #endif

@@ -209,9 +209,12 @@ namespace System.Net.NetworkInformation {
 
 		static IPAddress GetNonLoopbackIP ()
 		{
+#pragma warning disable 618
 			foreach (IPAddress addr in Dns.GetHostByName (Dns.GetHostName ()).AddressList)
 				if (!IPAddress.IsLoopback (addr))
 					return addr;
+#pragma warning restore 618
+
 			throw new InvalidOperationException ("Could not resolve non-loopback IP address for localhost");
 		}
 
@@ -262,12 +265,12 @@ namespace System.Net.NetworkInformation {
 				bytes = new byte [100];
 				do {
 					EndPoint endpoint = client;
-					int error = 0;
-					int rc = s.ReceiveFrom_nochecks_exc (bytes, 0, 100, SocketFlags.None,
-							ref endpoint, false, out error);
+					SocketError error = 0;
+					int rc = s.ReceiveFrom (bytes, 0, 100, SocketFlags.None,
+							ref endpoint, out error);
 
-					if (error != 0) {
-						if (error == (int) SocketError.TimedOut) {
+					if (error != SocketError.Success) {
+						if (error == SocketError.TimedOut) {
 							return new PingReply (null, new byte [0], options, 0, IPStatus.TimedOut);
 						}
 						throw new NotSupportedException (String.Format ("Unexpected socket error during ping request: {0}", error));

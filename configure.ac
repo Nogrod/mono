@@ -2,7 +2,7 @@
 #AC_PREREQ([2.62])
 
 # when bumping version number below, keep it in sync with man/mono.1 too
-AC_INIT(mono, [4.7.0],
+AC_INIT(mono, [4.9.0],
         [http://bugzilla.xamarin.com/enter_bug.cgi?classification=Mono])
 
 AC_CONFIG_SRCDIR([README.md])
@@ -52,6 +52,8 @@ CPPFLAGS_FOR_LIBGC=$CPPFLAGS
 CFLAGS_FOR_LIBGC=$CFLAGS
 CPPFLAGS_FOR_EGLIB=$CPPFLAGS
 CFLAGS_FOR_EGLIB=$CFLAGS
+CPPFLAGS_FOR_BTLS=$CPPFLAGS
+CFLAGS_FOR_BTLS=$CFLAGS
 
 # libgc uses some deprecated APIs
 CFLAGS_FOR_LIBGC="$CFLAGS -Wno-deprecated-declarations"
@@ -66,7 +68,11 @@ AC_SUBST(libmono_cflags)
 AC_SUBST(libmono_ldflags)
 
 # Variable to have relocatable .pc files (lib, or lib64)
-reloc_libdir=`basename ${libdir}`
+# realpath isn't always available, and requires that all but the tip of the provided
+# path exists. Fall back to the old behaviour, but realpath allows depth >1
+# e.g. Debian puts Mono in /usr/bin and libs in /usr/lib/x86_64-linux-gnu/ which is
+# too deep for the old method to work
+reloc_libdir=`realpath --relative-to=${prefix} ${libdir} 2> /dev/null || basename ${libdir}`
 AC_SUBST(reloc_libdir)
 
 # Set to yes if Unix sockets cannot be created in an anonymous namespace
@@ -111,6 +117,7 @@ case "$host" in
 		libgc_threads=win32
 		with_sigaltstack=no
 		with_tls=pthread
+		with_sgen_default_concurrent=yes
 		LN_S=cp
 		# This forces libgc to use the DllMain based thread registration code on win32
 		libgc_configure_args="$libgc_configure_args --enable-win32-dllmain=yes"
@@ -126,6 +133,7 @@ case "$host" in
 		libgc_threads=pthreads
 		with_sigaltstack=no
 		use_sigposix=yes
+		with_sgen_default_concurrent=yes
 		;;
 	*-*-kfreebsd*-gnu)
 		CPPFLAGS="$CPPFLAGS -DGC_FREEBSD_THREADS -D_GNU_SOURCE -D_REENTRANT -DUSE_MMAP -DUSE_MUNMAP -DTHREAD_LOCAL_ALLOC -pthread"
@@ -136,6 +144,7 @@ case "$host" in
 		need_link_unlink=yes
 		with_sigaltstack=no
 		use_sigposix=yes
+		with_sgen_default_concurrent=yes
 		;;
 	*-*-*freebsd*)
 		if test "x$PTHREAD_CFLAGS" = "x"; then
@@ -159,6 +168,7 @@ case "$host" in
 		libgc_threads=pthreads
 		use_sigposix=yes
 		has_dtrace=yes
+		with_sgen_default_concurrent=yes
 		;;
 	*-*-*openbsd*)
 		CPPFLAGS="$CPPFLAGS -D_THREAD_SAFE -DGC_OPENBSD_THREADS -DPLATFORM_BSD -D_REENTRANT -DUSE_MMAP"
@@ -173,6 +183,7 @@ case "$host" in
 		libgc_threads=pthreads
 		with_sigaltstack=no
 		use_sigposix=yes
+		with_sgen_default_concurrent=yes
 		;;
 	*-*-linux-android*)
 		platform_android=yes
@@ -236,6 +247,7 @@ case "$host" in
 			disable_munmap=yes
 			;;
 		esac
+		with_sgen_default_concurrent=yes
 		;;
 	*-*-nacl*)
 		CPPFLAGS="$CPPFLAGS -DGC_LINUX_THREADS -D_GNU_SOURCE -D_REENTRANT -DUSE_MMAP"
@@ -308,8 +320,10 @@ case "$host" in
 				CFLAGS_FOR_LIBGC="$CFLAGS_FOR_LIBGC $BROKEN_DARWIN_FLAGS"
 				CPPFLAGS_FOR_EGLIB="$CPPFLAGS_FOR_EGLIB $BROKEN_DARWIN_CPPFLAGS"
 				CFLAGS_FOR_EGLIB="$CFLAGS_FOR_EGLIB $BROKEN_DARWIN_FLAGS"
+				with_sgen_default_concurrent=yes
 				;;
 			x*64-*-darwin*)
+				with_sgen_default_concurrent=yes
 				;;
 			arm*-darwin*)
 				has_dtrace=no
@@ -344,6 +358,10 @@ fi
 if test x$target_win32 = xyes; then
    AC_DEFINE(TARGET_WIN32, 1, [Target Platform is Win32])
 fi
+
+# Defined for all targets/platforms using classic Windows API support.
+AC_DEFINE(HAVE_CLASSIC_WINAPI_SUPPORT, 1, [Use classic Windows API support])
+AC_DEFINE(HAVE_UWP_WINAPI_SUPPORT, 0, [Don't use UWP Windows API support])
 
 AC_SUBST(extra_runtime_ldflags)
 AM_CONDITIONAL(HOST_WIN32, test x$host_win32 = xyes)
@@ -532,9 +550,6 @@ if test x"$GCC" = xyes; then
 		# We rely on signed overflow to behave
 		CFLAGS="$CFLAGS -fwrapv"
 
-		# We rely on zero length arrays in structs
-		CFLAGS="$CFLAGS -Wno-zero-length-array"
-
 		CFLAGS="$CFLAGS -DMONO_DLL_EXPORT"
 		if test x"$disable_visibility_hidden" = xno; then
 		   # Don't export any symbols by default
@@ -561,6 +576,8 @@ if test x"$GCC" = xyes; then
 	   	   # https://bugzilla.samba.org/show_bug.cgi?id=8118
 	   	   WARN="$WARN -Qunused-arguments"
 		   WARN="$WARN -Wno-unused-function -Wno-tautological-compare -Wno-parentheses-equality -Wno-self-assign -Wno-return-stack-address -Wno-constant-logical-operand"
+		   # We rely on zero length arrays in structs
+		   WARN="$WARN -Wno-zero-length-array"
 		fi
 else
 	# The Sun Forte compiler complains about inline functions that access static variables
@@ -746,7 +763,7 @@ DISABLED_FEATURES=none
 # Set the build profiles and options before things which use them
 #
 
-AC_ARG_WITH(profile4_x,      [  --with-profile4=yes,no          If you want to install the 4.x FX (defaults to yes)],                 [], [with_profile4_x=default])
+AC_ARG_WITH(profile4_x,      [  --with-profile4_x=yes,no        If you want to install the 4.x FX (defaults to yes)],                 [], [with_profile4_x=default])
 AC_ARG_WITH(monodroid,       [  --with-monodroid=yes,no         If you want to build the MonoDroid assemblies (defaults to no)],      [], [with_monodroid=default])
 AC_ARG_WITH(monotouch,       [  --with-monotouch=yes,no         If you want to build the Xamarin.iOS assemblies (defaults to no)],    [], [with_monotouch=default])
 AC_ARG_WITH(monotouch_watch, [  --with-monotouch_watch=yes,no   If you want to build the Xamarin.WatchOS assemblies (defaults to no)],[], [with_monotouch_watch=default])
@@ -763,7 +780,7 @@ dnl
 TEST_PROFILE=default
 enable_llvm_default=no
 
-INVARIANT_AOT_OPTIONS=nimt-trampolines=900,ntrampolines=8000,nrgctx-fetch-trampolines=256,ngsharedvt-trampolines=2800
+INVARIANT_AOT_OPTIONS=nimt-trampolines=2000,ntrampolines=8000,nrgctx-fetch-trampolines=256,ngsharedvt-trampolines=4000
 
 if test x$cross_compiling = xyes -o x$enable_mcs_build = xno; then
    DISABLE_MCS_DOCS_default=yes
@@ -1153,20 +1170,6 @@ AC_COMPILE_IFELSE([
    AC_MSG_RESULT(yes)
 ], [
    have_visibility_hidden=no
-   AC_MSG_RESULT(no)
-])
-
-AC_MSG_CHECKING(for deprecated __attribute__)
-AC_TRY_COMPILE([
-     int doit (void) __attribute__ ((deprecated));
-     int doit (void) { return 0; }
-], [
-	return 0;
-], [
-   have_deprecated=yes
-   AC_MSG_RESULT(yes)
-], [
-   have_deprecated=no
    AC_MSG_RESULT(no)
 ])
 
@@ -2666,12 +2669,6 @@ fi
 
 AC_ARG_ENABLE(bcl-opt, [  --disable-bcl-opt	BCL is compiled with no optimizations (allows accurate BCL debugging)], test_bcl_opt=$enableval, test_bcl_opt=yes)
 
-AC_ARG_ENABLE(perf-events, [  --enable-perf-events Enable using `perf` for profiling on Linux], test_perf_events=$enableval, test_perf_events=no)
-if test "x$test_perf_events" = "xyes"; then
-	AC_DEFINE(ENABLE_PERF_EVENTS, 1, [Enable using `perf` for profiling on Linux])
-	AC_SUBST(ENABLE_PERF_EVENTS)
-fi
-
 AC_MSG_CHECKING([if big-arrays are to be enabled])
 AC_ARG_ENABLE(big-arrays,  [  --enable-big-arrays	Enable the allocation and indexing of arrays greater than Int32.MaxValue], enable_big_arrays=$enableval, enable_big_arrays=no)
 if test "x$enable_big_arrays" = "xyes" ; then
@@ -2856,13 +2853,12 @@ if test "x$enable_llvm" = "xyes"; then
    LLVM_SYSTEM_LIBS=`$LLVM_CONFIG --system-libs 2>/dev/null | grep -- -`
    llvm_jit_supported=yes
    llvm_jit_libs="jit mcjit $llvm_codegen"
-   if test $llvm_api_version -gt 100; then
-   	  # Based on llvm 3.9, only aot is currently supported
-      llvm_jit_libs="orcjit $llvm_codegen"
-   elif test "x$host" != "x$target"; then
+   if test "x$host" != "x$target"; then
       # No need for jit libs
 	  llvm_jit_supported=no
       llvm_jit_libs=""
+   elif test $llvm_api_version -gt 100; then
+      llvm_jit_libs="orcjit $llvm_codegen"
    fi
    LLVM_LIBS=`$LLVM_CONFIG --libs analysis core bitwriter $llvm_jit_libs`
    if test "x$LLVM_LIBS" = "x"; then
@@ -2948,6 +2944,8 @@ sizeof_register="SIZEOF_VOID_P"
 
 jit_wanted=true
 boehm_supported=true
+BTLS_SUPPORTED=no
+BTLS_PLATFORM=
 case "$host" in
 	mips*)
 		TARGET=MIPS;
@@ -3000,9 +2998,13 @@ case "$host" in
 			;;
 		  linux*)
 			AOT_SUPPORTED="yes"
+			BTLS_SUPPORTED=yes
+			BTLS_PLATFORM=i386
 			;;
 		  darwin*)
 			AOT_SUPPORTED="yes"
+			BTLS_SUPPORTED=yes
+			BTLS_PLATFORM=i386
 			;;
 		  openbsd*|freebsd*|kfreebsd-gnu*)
 		        ;;
@@ -3018,9 +3020,13 @@ case "$host" in
 		case $host_os in
 		  linux*)
 			AOT_SUPPORTED="yes"
+			BTLS_SUPPORTED=yes
+			BTLS_PLATFORM=x86_64
 			;;
 		  darwin*)
 			AOT_SUPPORTED="yes"
+			BTLS_SUPPORTED=yes
+			BTLS_PLATFORM=x86_64
 			;;
 		  openbsd*|freebsd*|kfreebsd-gnu*)
 			;;
@@ -3141,6 +3147,7 @@ HOST=$TARGET
 if test "x$host" != "x$target"; then
    AC_DEFINE(MONO_CROSS_COMPILE,1,[The runtime is compiled for cross-compiling mode])
    enable_mcs_build=no
+   BTLS_SUPPORTED=no
    case "$target" in
    arm*-darwin*)
 		TARGET=ARM;
@@ -3426,10 +3433,12 @@ if test "x$target_mach" = "xyes"; then
 	  AC_DEFINE(TARGET_WATCHOS,1,[The JIT/AOT targets WatchOS])
 	  CPPFLAGS_FOR_LIBGC="$CPPFLAGS_FOR_LIBGC -DTARGET_WATCHOS"
 	  CFLAGS_FOR_LIBGC="$CFLAGS_FOR_LIBGC -DTARGET_WATCHOS"
+	  BTLS_SUPPORTED=no
    elif test "x$TARGET" = "xARM" -o "x$TARGET" = "xARM64"; then
    	  AC_DEFINE(TARGET_IOS,1,[The JIT/AOT targets iOS])
 	  CPPFLAGS_FOR_LIBGC="$CPPFLAGS_FOR_LIBGC -DTARGET_IOS"
 	  CFLAGS_FOR_LIBGC="$CFLAGS_FOR_LIBGC -DTARGET_IOS"
+	  BTLS_SUPPORTED=no
    else
        AC_TRY_COMPILE([#include "TargetConditionals.h"],[
        #if TARGET_IPHONE_SIMULATOR == 1 || TARGET_OS_IPHONE == 1
@@ -3444,6 +3453,7 @@ if test "x$target_mach" = "xyes"; then
           AC_DEFINE(TARGET_IOS,1,[The JIT/AOT targets iOS])
           CPPFLAGS_FOR_LIBGC="$CPPFLAGS_FOR_LIBGC -DTARGET_IOS"
           CFLAGS_FOR_LIBGC="$CFLAGS_FOR_LIBGC -DTARGET_IOS"
+          BTLS_SUPPORTED=no
        ])
 	fi
    AC_DEFINE(TARGET_MACH,1,[The JIT/AOT targets Apple platforms])
@@ -3751,6 +3761,45 @@ if test ${TARGET} = unknown; then
 	AC_MSG_WARN("mono has not been ported to $host: some things may not work.")
 fi
 
+if test "x$platform_android" = "xyes"; then
+	case "x${TARGET}" in
+	xARM)
+		case "x$arm_ver" in
+		xARMv5)
+			BTLS_SUPPORTED=yes
+			BTLS_PLATFORM=android-armv5
+			;;
+		xARMv6)
+			BTLS_SUPPORTED=yes
+			BTLS_PLATFORM=android-armv6
+			;;
+		xARMv7)
+			BTLS_SUPPORTED=yes
+			BTLS_PLATFORM=android-armv7
+			;;
+		*)
+			BTLS_SUPPORTED=no
+			;;
+		esac
+		;;
+	xARM64)
+		BTLS_SUPPORTED=yes
+		BTLS_PLATFORM=android-v8a
+		;;
+	xX86)
+		BTLS_SUPPORTED=yes
+		BTLS_PLATFORM=android-x86
+		;;
+	xAMD64)
+		BTLS_SUPPORTED=yes
+		BTLS_PLATFORM=android-x64
+		;;
+	*)
+		BTLS_SUPPORTED=no
+		;;
+	esac
+fi
+
 if test ${ACCESS_UNALIGNED} = no; then
 	CPPFLAGS="$CPPFLAGS -DNO_UNALIGNED_ACCESS"
 fi
@@ -3872,6 +3921,90 @@ else
    fi
 fi
 AC_SUBST(LIBMONO_LA)
+
+dnl **************
+dnl ***  Btls  ***
+dnl **************
+
+AC_ARG_ENABLE(btls, [  --disable-btls             Disable the BoringTls provider], enable_btls=$enableval, enable_btls=$BTLS_SUPPORTED)
+AC_ARG_WITH(btls_android_ndk, [  --with-btls-android-ndk        Android NDK for BoringTls])
+
+AC_ARG_ENABLE(dynamic-btls, [ --enable-dynamic-btls Place the BTLS provider into a separate shared library/archive.], enable_dynamic_btls=$enableval, enable_dynamic_btls=no)
+
+AM_CONDITIONAL(BTLS, test x$enable_btls = xyes)
+
+btls_android=no
+if test "x$enable_btls" = "xyes"; then
+	AC_PATH_PROG(CMAKE, [cmake], [no], [$PATH:/Applications/CMake.app/Contents/bin:/usr/local/bin])
+	if test "x$CMAKE" = "xno"; then
+		AC_MSG_ERROR("cmake not found")
+	fi
+
+	BTLS_ROOT=`cd $srcdir && pwd`/external/boringssl
+	AC_SUBST(BTLS_ROOT)
+
+	btls_arch=
+	btls_cflags=
+	BTLS_CMAKE_ARGS=
+
+	case "$BTLS_PLATFORM" in
+	i386)
+		btls_arch=i386
+		btls_cflags="-m32"
+		case $host_os in
+			darwin*)
+				btls_cflags="$btls_cflags -arch i386"
+		esac
+		;;
+	x86_64)
+		btls_arch=x86_64
+		;;
+	android-armv5)
+		BTLS_CMAKE_ARGS="-DANDROID_ABI=\"armeabi\" -DANDROID_NATIVE_API_LEVEL=12"
+		;;
+	android-armv6)
+		BTLS_CMAKE_ARGS="-DANDROID_ABI=\"armeabi\" -DANDROID_NATIVE_API_LEVEL=12"
+		;;
+	android-armv7)
+		BTLS_CMAKE_ARGS="-DANDROID_ABI=\"armeabi-v7a\" -DANDROID_NATIVE_API_LEVEL=12"
+		;;
+	android-v8a)
+		BTLS_CMAKE_ARGS="-DANDROID_ABI=\"arm64-v8a\" -DANDROID_NATIVE_API_LEVEL=12"
+		;;
+	android-x86)
+		BTLS_CMAKE_ARGS="-DANDROID_ABI=\"x86\" -DANDROID_NATIVE_API_LEVEL=12"
+		;;
+	android-x64)
+		BTLS_CMAKE_ARGS="-DANDROID_ABI=\"x86_64\" -DANDROID_NATIVE_API_LEVEL=12"
+		;;
+	*)
+		AC_MSG_ERROR(Invalid BTLS platform)
+	esac
+
+	if test "x$platform_android" = "xyes"; then
+		btls_android=yes
+		BTLS_CMAKE_ARGS="$BTLS_CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=$BTLS_ROOT/util/android-cmake/android.toolchain.cmake"
+		if test "x$with_btls_android_ndk" != "x"; then
+			BTLS_CMAKE_ARGS="$BTLS_CMAKE_ARGS -DANDROID_NDK=\"$with_btls_android_ndk\""
+		fi
+	fi
+
+	if test "x$btls_arch" != "x"; then
+		BTLS_CMAKE_ARGS="$BTLS_CMAKE_ARGS -DBTLS_ARCH=\"$btls_arch\""
+	fi
+
+	BTLS_CFLAGS="$CPPFLAGS_FOR_BTLS $btls_cflags"
+	AC_SUBST(BTLS_ARCH)
+	AC_SUBST(BTLS_CFLAGS)
+	AC_SUBST(BTLS_PLATFORM)
+	AC_SUBST(BTLS_CMAKE_ARGS)
+
+	AC_DEFINE(HAVE_BTLS, 1, [BoringTls is supported])
+else
+	enable_btls=no
+fi
+
+AM_CONDITIONAL(BTLS_ANDROID, test x$btls_android = xyes)
 
 if test x$DISABLE_MCS_DOCS = xyes; then
    docs_dir=""
@@ -4109,6 +4242,7 @@ llvm/Makefile
 scripts/mono-find-provides
 scripts/mono-find-requires
 mono/Makefile
+mono/btls/Makefile
 mono/utils/Makefile
 mono/metadata/Makefile
 mono/dis/Makefile
@@ -4274,11 +4408,27 @@ fi
       echo "AOT_BUILD_FLAGS=$AOT_BUILD_FLAGS" >> $srcdir/$mcsdir/build/config.make
     fi
 
+    if test "x$enable_btls" = "xyes"; then
+      echo "HAVE_BTLS=1" >> $srcdir/$mcsdir/build/config.make
+      if test "x$enable_dynamic_btls" = "xyes"; then
+        echo "HAVE_DYNAMIC_BTLS=1" >> $srcdir/$mcsdir/build/config.make
+      fi
+    fi
+
   fi
 
 )
 
 libgdiplus_msg=${libgdiplus_loc:-assumed to be installed}
+
+btls_platform_string=
+if test x$enable_btls = xyes; then
+	if test x$btls_android = xyes; then
+		btls_platform_string=" (android:$BTLS_PLATFORM)"
+	else
+		btls_platform_string=" ($BTLS_PLATFORM)"
+	fi
+fi
 
 echo "
         mcs source:    $mcsdir
@@ -4305,6 +4455,7 @@ echo "
 	JNI support:     $jdk_headers_found
 	libgdiplus:      $libgdiplus_msg
 	zlib:            $zlib_msg
+	BTLS:            $enable_btls$btls_platform_string
 	$disabled
 "
 if test x$with_static_mono = xno -a "x$host_win32" != "xyes"; then

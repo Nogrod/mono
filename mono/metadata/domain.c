@@ -40,10 +40,13 @@
 #include <mono/metadata/mono-config.h>
 #include <mono/metadata/threads-types.h>
 #include <mono/metadata/runtime.h>
+#include <mono/metadata/w32mutex.h>
+#include <mono/metadata/w32semaphore.h>
+#include <mono/metadata/w32event.h>
+#include <mono/metadata/w32process.h>
 #include <metadata/threads.h>
 #include <metadata/profiler-private.h>
 #include <mono/metadata/coree.h>
-#include <mono/utils/w32handle.h>
 
 //#define DEBUG_DOMAIN_UNLOAD 1
 
@@ -64,7 +67,6 @@ MONO_FAST_TLS_DECLARE(tls_appdomain);
 	MonoThreadInfo *info; \
 	MONO_FAST_TLS_SET (tls_appdomain,x); \
 	mono_native_tls_set_value (appdomain_thread_id, x); \
-	mono_gc_set_current_thread_appdomain (x); \
 	info = mono_thread_info_current (); \
 	if (info) \
 		mono_thread_info_tls_set (info, TLS_KEY_DOMAIN, (x));	\
@@ -76,7 +78,6 @@ MONO_FAST_TLS_DECLARE(tls_appdomain);
 #define SET_APPDOMAIN(x) do {						\
 		MonoThreadInfo *info;								\
 		mono_native_tls_set_value (appdomain_thread_id, x);	\
-		mono_gc_set_current_thread_appdomain (x);		\
 		info = mono_thread_info_current ();				\
 		if (info)												 \
 			mono_thread_info_tls_set (info, TLS_KEY_DOMAIN, (x));	\
@@ -180,7 +181,7 @@ lock_free_mempool_free (LockFreeMempool *mp)
 	chunk = mp->chunks;
 	while (chunk) {
 		next = (LockFreeMempoolChunk *)chunk->prev;
-		mono_vfree (chunk, mono_pagesize ());
+		mono_vfree (chunk, mono_pagesize (), MONO_MEM_ACCOUNT_DOMAIN);
 		chunk = next;
 	}
 	g_free (mp);
@@ -198,7 +199,7 @@ lock_free_mempool_chunk_new (LockFreeMempool *mp, int len)
 	size = mono_pagesize ();
 	while (size - sizeof (LockFreeMempoolChunk) < len)
 		size += mono_pagesize ();
-	chunk = (LockFreeMempoolChunk *)mono_valloc (0, size, MONO_MMAP_READ|MONO_MMAP_WRITE);
+	chunk = (LockFreeMempoolChunk *)mono_valloc (0, size, MONO_MMAP_READ|MONO_MMAP_WRITE, MONO_MEM_ACCOUNT_DOMAIN);
 	g_assert (chunk);
 	chunk->mem = (guint8 *)ALIGN_PTR_TO ((char*)chunk + sizeof (LockFreeMempoolChunk), 16);
 	chunk->size = ((char*)chunk + size) - (char*)chunk->mem;
@@ -510,7 +511,7 @@ mono_init_internal (const char *filename, const char *exe_filename, const char *
 	static MonoDomain *domain = NULL;
 	MonoAssembly *ass = NULL;
 	MonoImageOpenStatus status = MONO_IMAGE_OK;
-	const MonoRuntimeInfo* runtimes [G_N_ELEMENTS (supported_runtimes) + 1];
+	const MonoRuntimeInfo* runtimes [G_N_ELEMENTS (supported_runtimes) + 1] = { NULL };
 	int n, dummy;
 
 #ifdef DEBUG_DOMAIN_UNLOAD
@@ -520,15 +521,21 @@ mono_init_internal (const char *filename, const char *exe_filename, const char *
 	if (domain)
 		g_assert_not_reached ();
 
-#ifdef HOST_WIN32
+#if defined(HOST_WIN32) && G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT)
 	/* Avoid system error message boxes. */
 	SetErrorMode (SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX);
 #endif
 
 #ifndef HOST_WIN32
 	mono_w32handle_init ();
+	mono_w32handle_namespace_init ();
 	wapi_init ();
 #endif
+
+	mono_w32mutex_init ();
+	mono_w32semaphore_init ();
+	mono_w32event_init ();
+	mono_w32process_init ();
 
 #ifndef DISABLE_PERFCOUNTERS
 	mono_perfcounters_init ();
@@ -893,9 +900,10 @@ mono_cleanup (void)
 	mono_native_tls_free (appdomain_thread_id);
 	mono_coop_mutex_destroy (&appdomains_mutex);
 
+	mono_w32process_cleanup ();
+
 #ifndef HOST_WIN32
 	wapi_cleanup ();
-	mono_w32handle_cleanup ();
 #endif
 }
 
@@ -1169,6 +1177,12 @@ mono_domain_free (MonoDomain *domain, gboolean force)
 	g_slist_free (domain->domain_assemblies);
 	domain->domain_assemblies = NULL;
 
+	/* 
+	 * Send this after the assemblies have been unloaded and the domain is still in a 
+	 * usable state.
+	 */
+	mono_profiler_appdomain_event (domain, MONO_PROFILE_END_UNLOAD);
+
 	if (free_domain_hook)
 		free_domain_hook (domain);
 
@@ -1241,10 +1255,6 @@ mono_domain_free (MonoDomain *domain, gboolean force)
 	if (domain->generic_virtual_cases) {
 		g_hash_table_destroy (domain->generic_virtual_cases);
 		domain->generic_virtual_cases = NULL;
-	}
-	if (domain->generic_virtual_thunks) {
-		g_hash_table_destroy (domain->generic_virtual_thunks);
-		domain->generic_virtual_thunks = NULL;
 	}
 	if (domain->ftnptrs_hash) {
 		g_hash_table_destroy (domain->ftnptrs_hash);

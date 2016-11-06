@@ -58,6 +58,8 @@ boehm_thread_register (MonoThreadInfo* info, void *baseptr);
 static void
 boehm_thread_unregister (MonoThreadInfo *p);
 static void
+boehm_thread_detach (MonoThreadInfo *p);
+static void
 register_test_toggleref_callback (void);
 
 #define BOEHM_GC_BIT_FINALIZER_AWARE 1
@@ -97,6 +99,9 @@ mono_gc_warning (char *msg, GC_word arg)
 	mono_trace (G_LOG_LEVEL_WARNING, MONO_TRACE_GC, msg, (unsigned long)arg);
 }
 
+static void on_gc_notification (GC_EventType event);
+static void on_gc_heap_resize (size_t new_size);
+
 void
 mono_gc_base_init (void)
 {
@@ -108,6 +113,10 @@ mono_gc_base_init (void)
 		return;
 
 	mono_counters_init ();
+
+#ifndef HOST_WIN32
+	mono_w32handle_init ();
+#endif
 
 	/*
 	 * Handle the case when we are called from a thread different from the main thread,
@@ -236,6 +245,7 @@ mono_gc_base_init (void)
 	memset (&cb, 0, sizeof (cb));
 	cb.thread_register = boehm_thread_register;
 	cb.thread_unregister = boehm_thread_unregister;
+	cb.thread_detach = boehm_thread_detach;
 	cb.mono_method_is_critical = (gboolean (*)(void *))mono_runtime_is_critical_method;
 
 	mono_threads_init (&cb, sizeof (MonoThreadInfo));
@@ -244,7 +254,8 @@ mono_gc_base_init (void)
 
 	mono_thread_info_attach (&dummy);
 
-	mono_gc_enable_events ();
+	GC_set_on_collection_event (on_gc_notification);
+	GC_on_heap_resize = on_gc_heap_resize;
 
 	MONO_GC_REGISTER_ROOT_FIXED (gc_handles [HANDLE_NORMAL].entries, MONO_ROOT_SOURCE_GC_HANDLE, "gc handles table");
 	MONO_GC_REGISTER_ROOT_FIXED (gc_handles [HANDLE_PINNED].entries, MONO_ROOT_SOURCE_GC_HANDLE, "gc handles table");
@@ -406,6 +417,13 @@ boehm_thread_unregister (MonoThreadInfo *p)
 		mono_threads_add_joinable_thread ((gpointer)tid);
 }
 
+static void
+boehm_thread_detach (MonoThreadInfo *p)
+{
+	if (mono_thread_internal_current_is_attached ())
+		mono_thread_detach_internal (mono_thread_internal_current ());
+}
+
 gboolean
 mono_object_is_alive (MonoObject* o)
 {
@@ -428,7 +446,6 @@ on_gc_notification (GC_EventType event)
 	switch (e) {
 	case MONO_GC_EVENT_PRE_STOP_WORLD:
 		MONO_GC_WORLD_STOP_BEGIN ();
-		mono_thread_info_suspend_lock ();
 		break;
 
 	case MONO_GC_EVENT_POST_STOP_WORLD:
@@ -441,7 +458,6 @@ on_gc_notification (GC_EventType event)
 
 	case MONO_GC_EVENT_POST_START_WORLD:
 		MONO_GC_WORLD_RESTART_END (1);
-		mono_thread_info_suspend_unlock ();
 		break;
 
 	case MONO_GC_EVENT_START:
@@ -481,7 +497,21 @@ on_gc_notification (GC_EventType event)
 	}
 
 	mono_profiler_gc_event (e, 0);
+
+	switch (e) {
+	case MONO_GC_EVENT_PRE_STOP_WORLD:
+		mono_thread_info_suspend_lock ();
+		mono_profiler_gc_event (MONO_GC_EVENT_PRE_STOP_WORLD_LOCKED, 0);
+		break;
+	case MONO_GC_EVENT_POST_START_WORLD:
+		mono_thread_info_suspend_unlock ();
+		mono_profiler_gc_event (MONO_GC_EVENT_POST_START_WORLD_UNLOCKED, 0);
+		break;
+	default:
+		break;
+	}
 }
+
  
 static void
 on_gc_heap_resize (size_t new_size)
@@ -495,21 +525,6 @@ on_gc_heap_resize (size_t new_size)
 	}
 #endif
 	mono_profiler_gc_heap_resize (new_size);
-}
-
-void
-mono_gc_enable_events (void)
-{
-	GC_set_on_collection_event (on_gc_notification);
-	GC_on_heap_resize = on_gc_heap_resize;
-}
-
-static gboolean alloc_events = FALSE;
-
-void
-mono_gc_enable_alloc_events (void)
-{
-	alloc_events = TRUE;
 }
 
 int
@@ -653,7 +668,7 @@ mono_gc_alloc_obj (MonoVTable *vtable, size_t size)
 		obj->vtable = vtable;
 	}
 
-	if (G_UNLIKELY (alloc_events))
+	if (G_UNLIKELY (mono_profiler_events & MONO_PROFILE_ALLOCATIONS))
 		mono_profiler_allocation (obj);
 
 	return obj;
@@ -687,7 +702,7 @@ mono_gc_alloc_vector (MonoVTable *vtable, size_t size, uintptr_t max_length)
 
 	obj->max_length = max_length;
 
-	if (G_UNLIKELY (alloc_events))
+	if (G_UNLIKELY (mono_profiler_events & MONO_PROFILE_ALLOCATIONS))
 		mono_profiler_allocation (&obj->obj);
 
 	return obj;
@@ -724,7 +739,7 @@ mono_gc_alloc_array (MonoVTable *vtable, size_t size, uintptr_t max_length, uint
 	if (bounds_size)
 		obj->bounds = (MonoArrayBounds *) ((char *) obj + size - bounds_size);
 
-	if (G_UNLIKELY (alloc_events))
+	if (G_UNLIKELY (mono_profiler_events & MONO_PROFILE_ALLOCATIONS))
 		mono_profiler_allocation (&obj->obj);
 
 	return obj;
@@ -742,7 +757,7 @@ mono_gc_alloc_string (MonoVTable *vtable, size_t size, gint32 len)
 	obj->length = len;
 	obj->chars [len] = 0;
 
-	if (G_UNLIKELY (alloc_events))
+	if (G_UNLIKELY (mono_profiler_events & MONO_PROFILE_ALLOCATIONS))
 		mono_profiler_allocation (&obj->object);
 
 	return obj;
@@ -773,7 +788,7 @@ mono_gc_invoke_finalizers (void)
 	return 0;
 }
 
-gboolean
+MonoBoolean
 mono_gc_pending_finalizers (void)
 {
 	return GC_should_invoke_finalizers ();
@@ -1100,7 +1115,7 @@ create_allocator (int atype, int tls_key, gboolean slowpath)
 static MonoMethod* alloc_method_cache [ATYPE_NUM];
 static MonoMethod* slowpath_alloc_method_cache [ATYPE_NUM];
 
-static G_GNUC_UNUSED gboolean
+gboolean
 mono_gc_is_critical_method (MonoMethod *method)
 {
 	int i;
@@ -1219,7 +1234,7 @@ mono_gc_get_write_barrier (void)
 
 #else
 
-static G_GNUC_UNUSED gboolean
+gboolean
 mono_gc_is_critical_method (MonoMethod *method)
 {
 	return FALSE;
@@ -1337,11 +1352,6 @@ mono_gc_get_nursery (int *shift_bits, size_t *size)
 	return NULL;
 }
 
-void
-mono_gc_set_current_thread_appdomain (MonoDomain *domain)
-{
-}
-
 gboolean
 mono_gc_precise_stack_mark_enabled (void)
 {
@@ -1352,6 +1362,16 @@ FILE *
 mono_gc_get_logfile (void)
 {
 	return NULL;
+}
+
+void
+mono_gc_params_set (const char* options)
+{
+}
+
+void
+mono_gc_debug_set (const char* options)
+{
 }
 
 void
@@ -1916,5 +1936,10 @@ mono_gchandle_free_domain (MonoDomain *domain)
 	}
 
 }
+#else
 
+#ifdef _MSC_VER
+// Quiet Visual Studio linker warning, LNK4221, in cases when this source file intentional ends up empty.
+void __mono_win32_boehm_gc_quiet_lnk4221(void) {}
+#endif
 #endif /* no Boehm GC */

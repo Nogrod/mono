@@ -24,7 +24,6 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-#if !MONO_FEATURE_NEW_TLS
 #if SECURITY_DEP
 
 #if MONO_SECURITY_ALIAS
@@ -95,7 +94,9 @@ namespace System.Net.Security
 
 		static MonoTlsProvider GetProvider ()
 		{
+#pragma warning disable 612
 			return MonoTlsProviderFactory.GetDefaultProvider ();
+#pragma warning restore 612
 		}
 
 		public SslStream (Stream innerStream)
@@ -409,6 +410,4 @@ namespace System.Net.Security
 	{
 	}
 }
-#endif
-
 #endif

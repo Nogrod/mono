@@ -59,9 +59,9 @@ namespace System.Diagnostics {
 
 		private StackFrame[] frames;
 		readonly StackTrace[] captured_traces;
+#pragma warning disable 414		
 		private bool debug_info;
-
-		private static Dictionary<string, Func<StackTrace, string>> metadataHandlers;
+#pragma warning restore
 
 		[MethodImplAttribute (MethodImplOptions.NoInlining)]
 		public StackTrace ()
@@ -198,7 +198,6 @@ namespace System.Diagnostics {
 
 		bool AddFrames (StringBuilder sb)
 		{
-			bool printOffset;
 			string debugInfo, indentation;
 			string unknown = Locale.GetText ("<unknown method>");
 
@@ -251,7 +250,7 @@ namespace System.Diagnostics {
 			return i != 0;
 		}
 
-		public static void GetFullNameForStackTrace (StringBuilder sb, MethodBase mi)
+		internal void GetFullNameForStackTrace (StringBuilder sb, MethodBase mi)
 		{
 			var declaringType = mi.DeclaringType;
 			if (declaringType.IsGenericType && !declaringType.IsGenericTypeDefinition)

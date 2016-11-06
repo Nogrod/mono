@@ -151,6 +151,7 @@ namespace System.Diagnostics.Tracing
 		{
 		}
 
+		[CLSCompliant (false)]
 		public void Write<T> (string eventName, ref EventSourceOptions options, ref T data)
 		{
 		}
@@ -256,6 +257,7 @@ namespace System.Diagnostics.Tracing
 			WriteEvent (eventId, new object[] { arg1, arg2, arg3 } );
 		}
 
+		[CLSCompliant (false)]
 		protected unsafe void WriteEventCore (int eventId, int eventDataCount, EventData* data)
 		{
 		}
@@ -264,6 +266,7 @@ namespace System.Diagnostics.Tracing
 		{
 		}
 
+		[CLSCompliant (false)]
 		protected unsafe void WriteEventWithRelatedActivityIdCore (int eventId, Guid* relatedActivityId, int eventDataCount, EventSource.EventData* data)
 		{
 		}

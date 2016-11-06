@@ -29,12 +29,13 @@
 #include <mono/metadata/object.h>
 #include <mono/io-layer/io-layer.h>
 #include <mono/metadata/file-io.h>
+#include <mono/metadata/file-io-internals.h>
 #include <mono/metadata/exception.h>
 #include <mono/metadata/appdomain.h>
 #include <mono/metadata/marshal.h>
 #include <mono/utils/strenc.h>
 #include <utils/mono-io-portability.h>
-#include <mono/utils/w32handle.h>
+#include <mono/metadata/w32handle.h>
 
 #undef DEBUG
 
@@ -489,8 +490,13 @@ ves_icall_System_IO_MonoIO_FindFirst (MonoString *path,
 	ifh = g_new (IncrementalFind, 1);
 	ifh->find_handle = find_handle;
 	ifh->utf8_path = mono_string_to_utf8_checked (path, &error);
-	if (mono_error_set_pending_exception (&error))
+	if (mono_error_set_pending_exception (&error)) {
+		MONO_ENTER_GC_SAFE;
+		FindClose (find_handle);
+		MONO_EXIT_GC_SAFE;
+		g_free (ifh);
 		return NULL;
+	}
 	ifh->domain = mono_domain_get ();
 	*handle = ifh;
 
@@ -601,33 +607,55 @@ ves_icall_System_IO_MonoIO_SetCurrentDirectory (MonoString *path,
 	return(ret);
 }
 
-MonoBoolean
-ves_icall_System_IO_MonoIO_MoveFile (MonoString *path, MonoString *dest,
-				     gint32 *error)
+#if G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT)
+gboolean
+mono_file_io_move_file (gunichar2 *path, gunichar2 *dest, gint32 *error)
 {
-	gboolean ret;
+	gboolean result = FALSE;
 	MONO_ENTER_GC_SAFE;
-	
-	*error=ERROR_SUCCESS;
 
-	ret=MoveFile (mono_string_chars (path), mono_string_chars (dest));
-	if(ret==FALSE) {
+	result = MoveFile (path, dest);
+	if (result == FALSE) {
 		*error=GetLastError ();
 	}
 
 	MONO_EXIT_GC_SAFE;
-	return(ret);
+	return result;
 }
+#endif /* HAVE_CLASSIC_WINAPI_SUPPORT */
+
+MonoBoolean
+ves_icall_System_IO_MonoIO_MoveFile (MonoString *path, MonoString *dest, gint32 *error)
+{
+	*error=ERROR_SUCCESS;
+	return mono_file_io_move_file (mono_string_chars (path), mono_string_chars (dest), error);
+}
+
+#if G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT)
+gboolean
+mono_file_io_replace_file (gunichar2 *destinationFileName, gunichar2 *sourceFileName,
+			   gunichar2 *destinationBackupFileName, guint32 flags, gint32 *error)
+{
+	gboolean result = FALSE;
+	MONO_ENTER_GC_SAFE;
+
+	result = ReplaceFile (destinationFileName, sourceFileName, destinationBackupFileName, flags, NULL, NULL);
+	if (result == FALSE) {
+		*error=GetLastError ();
+	}
+
+	MONO_EXIT_GC_SAFE;
+	return result;
+}
+#endif /* HAVE_CLASSIC_WINAPI_SUPPORT */
 
 MonoBoolean
 ves_icall_System_IO_MonoIO_ReplaceFile (MonoString *sourceFileName, MonoString *destinationFileName,
 					MonoString *destinationBackupFileName, MonoBoolean ignoreMetadataErrors,
 					gint32 *error)
 {
-	gboolean ret;
 	gunichar2 *utf16_sourceFileName = NULL, *utf16_destinationFileName = NULL, *utf16_destinationBackupFileName = NULL;
 	guint32 replaceFlags = REPLACEFILE_WRITE_THROUGH;
-	MONO_ENTER_GC_SAFE;
 
 	if (sourceFileName)
 		utf16_sourceFileName = mono_string_chars (sourceFileName);
@@ -641,31 +669,33 @@ ves_icall_System_IO_MonoIO_ReplaceFile (MonoString *sourceFileName, MonoString *
 		replaceFlags |= REPLACEFILE_IGNORE_MERGE_ERRORS;
 
 	/* FIXME: source and destination file names must not be NULL, but apparently they might be! */
-	ret = ReplaceFile (utf16_destinationFileName, utf16_sourceFileName, utf16_destinationBackupFileName,
-			 replaceFlags, NULL, NULL);
-	if (ret == FALSE)
-		*error = GetLastError ();
+	return mono_file_io_replace_file (utf16_destinationFileName, utf16_sourceFileName,
+					  utf16_destinationBackupFileName, replaceFlags, error);
+}
+
+#if G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT)
+gboolean
+mono_file_io_copy_file (gunichar2 *path, gunichar2 *dest, gboolean overwrite, gint32 *error)
+{
+	gboolean result = FALSE;
+	MONO_ENTER_GC_SAFE;
+
+	result = CopyFile (path, dest, !overwrite);
+	if (result == FALSE) {
+		*error=GetLastError ();
+	}
 
 	MONO_EXIT_GC_SAFE;
-	return ret;
+	return result;
 }
+#endif /* HAVE_CLASSIC_WINAPI_SUPPORT */
 
 MonoBoolean
 ves_icall_System_IO_MonoIO_CopyFile (MonoString *path, MonoString *dest,
 				     MonoBoolean overwrite, gint32 *error)
 {
-	gboolean ret;
-	MONO_ENTER_GC_SAFE;
-	
 	*error=ERROR_SUCCESS;
-	
-	ret=CopyFile (mono_string_chars (path), mono_string_chars (dest), !overwrite);
-	if(ret==FALSE) {
-		*error=GetLastError ();
-	}
-	
-	MONO_EXIT_GC_SAFE;
-	return(ret);
+	return mono_file_io_copy_file (mono_string_chars (path), mono_string_chars (dest), overwrite, error);
 }
 
 MonoBoolean
@@ -799,10 +829,6 @@ ves_icall_System_IO_MonoIO_Open (MonoString *filename, gint32 mode,
 
 		if (options & FileOptions_Temporary)
 			attributes |= FILE_ATTRIBUTE_TEMPORARY;
-		
-		/* Not sure if we should set FILE_FLAG_OVERLAPPED, how does this mix with the "Async" bool here? */
-		if (options & FileOptions_Asynchronous)
-			attributes |= FILE_FLAG_OVERLAPPED;
 		
 		if (options & FileOptions_WriteThrough)
 			attributes |= FILE_FLAG_WRITE_THROUGH;
@@ -947,22 +973,30 @@ ves_icall_System_IO_MonoIO_Flush (HANDLE handle, gint32 *error)
 	return(ret);
 }
 
-gint64 
-ves_icall_System_IO_MonoIO_GetLength (HANDLE handle, gint32 *error)
+#if G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT)
+gint64
+mono_file_io_get_file_size (HANDLE handle, gint32 *error)
 {
 	gint64 length;
 	guint32 length_hi;
+
 	MONO_ENTER_GC_SAFE;
 
-	*error=ERROR_SUCCESS;
-	
 	length = GetFileSize (handle, &length_hi);
 	if(length==INVALID_FILE_SIZE) {
 		*error=GetLastError ();
 	}
-	
+
 	MONO_EXIT_GC_SAFE;
 	return length | ((gint64)length_hi << 32);
+}
+#endif /* G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT) */
+
+gint64
+ves_icall_System_IO_MonoIO_GetLength (HANDLE handle, gint32 *error)
+{
+	*error=ERROR_SUCCESS;
+	return mono_file_io_get_file_size (handle, error);
 }
 
 /* FIXME make gc suspendable */
@@ -1112,48 +1146,34 @@ ves_icall_System_IO_MonoIO_DuplicateHandle (HANDLE source_process_handle, HANDLE
 	return(TRUE);
 }
 
+#ifndef HOST_WIN32
 gunichar2 
 ves_icall_System_IO_MonoIO_get_VolumeSeparatorChar ()
 {
-#if defined (TARGET_WIN32)
-	return (gunichar2) ':';	/* colon */
-#else
 	return (gunichar2) '/';	/* forward slash */
-#endif
 }
 
 gunichar2 
 ves_icall_System_IO_MonoIO_get_DirectorySeparatorChar ()
 {
-#if defined (TARGET_WIN32)
-	return (gunichar2) '\\';	/* backslash */
-#else
 	return (gunichar2) '/';	/* forward slash */
-#endif
 }
 
 gunichar2 
 ves_icall_System_IO_MonoIO_get_AltDirectorySeparatorChar ()
 {
-#if defined (TARGET_WIN32)
-	return (gunichar2) '/';	/* forward slash */
-#else
 	if (IS_PORTABILITY_SET)
 		return (gunichar2) '\\';	/* backslash */
 	else
 		return (gunichar2) '/';	/* forward slash */
-#endif
 }
 
 gunichar2 
 ves_icall_System_IO_MonoIO_get_PathSeparator ()
 {
-#if defined (TARGET_WIN32)
-	return (gunichar2) ';';	/* semicolon */
-#else
 	return (gunichar2) ':';	/* colon */
-#endif
 }
+#endif /* !HOST_WIN32 */
 
 static const gunichar2
 invalid_path_chars [] = {
@@ -1196,38 +1216,56 @@ ves_icall_System_IO_MonoIO_get_InvalidPathChars ()
 	return chars;
 }
 
-void ves_icall_System_IO_MonoIO_Lock (HANDLE handle, gint64 position,
-				      gint64 length, gint32 *error)
+#if G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT)
+gboolean
+mono_file_io_lock_file (HANDLE handle, gint64 position, gint64 length, gint32 *error)
 {
-	gboolean ret;
+	gboolean result = FALSE;
 	MONO_ENTER_GC_SAFE;
-	
-	*error=ERROR_SUCCESS;
-	
-	ret=LockFile (handle, position & 0xFFFFFFFF, position >> 32,
-		      length & 0xFFFFFFFF, length >> 32);
-	if (ret == FALSE) {
+
+	result = LockFile (handle, position & 0xFFFFFFFF, position >> 32,
+			   length & 0xFFFFFFFF, length >> 32);
+
+	if (result == FALSE) {
 		*error = GetLastError ();
 	}
 
 	MONO_EXIT_GC_SAFE;
+	return result;
 }
+#endif /* G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT) */
+
+void ves_icall_System_IO_MonoIO_Lock (HANDLE handle, gint64 position,
+				      gint64 length, gint32 *error)
+{
+	*error=ERROR_SUCCESS;
+	mono_file_io_lock_file (handle, position, length, error);
+}
+
+#if G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT)
+gboolean
+mono_file_io_unlock_file (HANDLE handle, gint64 position, gint64 length, gint32 *error)
+{
+	gboolean result = FALSE;
+	MONO_ENTER_GC_SAFE;
+	
+	result = UnlockFile (handle, position & 0xFFFFFFFF, position >> 32,
+			     length & 0xFFFFFFFF, length >> 32);
+
+	if (result == FALSE) {
+		*error = GetLastError ();
+	}
+
+	MONO_EXIT_GC_SAFE;
+	return result;
+}
+#endif /* G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT) */
 
 void ves_icall_System_IO_MonoIO_Unlock (HANDLE handle, gint64 position,
 					gint64 length, gint32 *error)
 {
-	gboolean ret;
-	MONO_ENTER_GC_SAFE;
-	
 	*error=ERROR_SUCCESS;
-	
-	ret=UnlockFile (handle, position & 0xFFFFFFFF, position >> 32,
-			length & 0xFFFFFFFF, length >> 32);
-	if (ret == FALSE) {
-		*error = GetLastError ();
-	}
-
-	MONO_EXIT_GC_SAFE;
+	mono_file_io_unlock_file (handle, position, length, error);
 }
 
 //Support for io-layer free mmap'd files.
@@ -1273,11 +1311,12 @@ mono_filesize_from_fd (int fd)
 
 #endif
 
+#ifndef HOST_WIN32
 void mono_w32handle_dump (void);
 
 void ves_icall_System_IO_MonoIO_DumpHandles (void)
 {
-#ifndef HOST_WIN32
+
 	mono_w32handle_dump ();
-#endif
 }
+#endif /* !HOST_WIN32 */

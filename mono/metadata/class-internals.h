@@ -16,7 +16,7 @@
 
 #define MONO_CLASS_IS_ARRAY(c) ((c)->rank)
 
-#define MONO_CLASS_HAS_STATIC_METADATA(klass) ((klass)->type_token && !(klass)->image->dynamic && !(klass)->generic_class)
+#define MONO_CLASS_HAS_STATIC_METADATA(klass) ((klass)->type_token && !(klass)->image->dynamic && !mono_class_is_ginst (klass))
 
 #define MONO_DEFAULT_SUPERTABLE_SIZE 6
 
@@ -194,7 +194,7 @@ struct _MonoEvent {
 };
 
 /* type of exception being "on hold" for later processing (see exception_type) */
-enum {
+typedef enum {
 	MONO_EXCEPTION_NONE = 0,
 	MONO_EXCEPTION_INVALID_PROGRAM = 3,
 	MONO_EXCEPTION_UNVERIFIABLE_IL = 4,
@@ -211,7 +211,7 @@ enum {
 	MONO_EXCEPTION_INLINE_FAILED = 15,
 	MONO_EXCEPTION_MONO_ERROR = 16,
 	/* add other exception type */
-};
+} MonoExceptionType;
 
 /* This struct collects the info needed for the runtime use of a class,
  * like the vtables for a domain, the GC descriptor, etc.
@@ -256,6 +256,15 @@ typedef struct {
 	GList      *nested_classes;
 } MonoClassExt;
 
+typedef enum {
+	MONO_CLASS_DEF = 1, /* non-generic type */
+	MONO_CLASS_GTD, /* generic type definition */
+	MONO_CLASS_GINST, /* generic instantiation */
+	MONO_CLASS_GPARAM, /* generic parameter */
+	MONO_CLASS_ARRAY, /* vector or array, bounded or not */
+	MONO_CLASS_POINTER, /* pointer of function pointer*/
+} MonoTypeKind;
+
 struct _MonoClass {
 	/* element class for arrays and enum basetype for enums */
 	MonoClass *element_class; 
@@ -272,8 +281,6 @@ struct _MonoClass {
 	int        instance_size; /* object instance size */
 
 	guint inited          : 1;
-	/* We use init_pending to detect cyclic calls to mono_class_init */
-	guint init_pending    : 1;
 
 	/* A class contains static and non static data. Static data can be
 	 * of the same type as the class itselfs, but it does not influence
@@ -317,19 +324,12 @@ struct _MonoClass {
 	guint nested_classes_inited : 1; /* Whenever nested_class is initialized */
 
 	/* next byte*/
+	guint class_kind : 3; /* One of the values from MonoTypeKind */
 	guint interfaces_inited : 1; /* interfaces is initialized */
 	guint simd_type : 1; /* class is a simd intrinsic type */
-	guint is_generic : 1; /* class is a generic type definition */
-	guint is_inflated : 1; /* class is a generic instance */
 	guint has_finalize_inited    : 1; /* has_finalize is initialized */
-	guint fields_inited : 1; /* fields is initialized */
-	guint setup_fields_called : 1; /* to prevent infinite loops in setup_fields */
-
-	guint8     exception_type;	/* MONO_EXCEPTION_* */
-
-	/* Additional information about the exception */
-	/* Stored as property MONO_CLASS_PROP_EXCEPTION_DATA */
-	//void       *exception_data;
+	guint fields_inited : 1; /* setup_fields () has finished */
+	guint has_failure : 1; /* See MONO_CLASS_PROP_EXCEPTION_DATA for a MonoErrorBoxed with the details */
 
 	MonoClass  *parent;
 	MonoClass  *nested_in;
@@ -365,14 +365,20 @@ struct _MonoClass {
 	/*
 	 * From the TypeDef table
 	 */
-	guint32    flags;
 	struct {
 #if MONO_SMALL_CONFIG
-		guint16 first, count;
+		guint16 count;
 #else
-		guint32 first, count;
+		guint32 count;
 #endif
-	} field, method;
+	} field;
+	struct {
+#if MONO_SMALL_CONFIG
+		guint16 count;
+#else
+		guint32 count;
+#endif
+	} method;
 
 	/* A GC handle pointing to the corresponding type builder/generic param builder */
 	guint32 ref_info_handle;
@@ -391,15 +397,9 @@ struct _MonoClass {
 	MonoType this_arg;
 	MonoType byval_arg;
 
-	MonoGenericClass *generic_class;
-	MonoGenericContainer *generic_container;
-
 	MonoGCDescriptor gc_descr;
 
 	MonoClassRuntimeInfo *runtime_info;
-
-	/* next element in the class_cache hash list (in MonoImage) */
-	MonoClass *next_class_cache;
 
 	/* Generic vtable. Initialized by a call to mono_class_setup_vtable () */
 	MonoMethod **vtable;
@@ -407,6 +407,40 @@ struct _MonoClass {
 	/* Rarely used fields of classes */
 	MonoClassExt *ext;
 };
+
+typedef struct {
+	MonoClass class;
+	guint32	flags;
+	/*
+	 * From the TypeDef table
+	 */
+	guint32 first_method_idx;
+	guint32 first_field_idx;
+	/* next element in the class_cache hash list (in MonoImage) */
+	MonoClass *next_class_cache;
+} MonoClassDef;
+
+typedef struct {
+	MonoClassDef class;
+	MonoGenericContainer *generic_container;
+} MonoClassGtd;
+
+typedef struct {
+	MonoClass class;
+	MonoGenericClass *generic_class;
+} MonoClassGenericInst;
+
+typedef struct {
+	MonoClass class;
+} MonoClassGenericParam;
+
+typedef struct {
+	MonoClass class;
+} MonoClassArray;
+
+typedef struct {
+	MonoClass class;
+} MonoClassPointer;
 
 #ifdef COMPRESSED_INTERFACE_BITMAP
 int mono_compress_bitmap (uint8_t *dest, const uint8_t *bitmap, int size);
@@ -529,8 +563,9 @@ struct _MonoMethodInflated {
 struct _MonoGenericClass {
 	MonoClass *container_class;	/* the generic type definition */
 	MonoGenericContext context;	/* a context that contains the type instantiation doesn't contain any method instantiation */ /* FIXME: Only the class_inst member of "context" is ever used, so this field could be replaced with just a monogenericinst */
-	guint is_dynamic  : 1;		/* We're a MonoDynamicGenericClass */
+	guint is_dynamic  : 1;		/* Contains dynamic types */
 	guint is_tb_open  : 1;		/* This is the fully open instantiation for a type_builder. Quite ugly, but it's temporary.*/
+	guint need_sync   : 1;      /* Only if dynamic. Need to be synchronized with its container class after its finished. */
 	MonoClass *cached_class;	/* if present, the MonoClass corresponding to the instantiation.  */
 
 	/* 
@@ -539,21 +574,6 @@ struct _MonoGenericClass {
 	 * so it is easy to free.
 	 */
 	MonoImageSet *owner;
-};
-
-/*
- * This is used when instantiating a generic type definition which is
- * a TypeBuilder.
- */
-struct _MonoDynamicGenericClass {
-	MonoGenericClass generic_class;
-	int count_fields;
-	MonoClassField *fields;
-	guint initialized;
-	/* The non-inflated types of the fields */
-	MonoType **field_generic_types;
-	/* The managed objects representing the fields */
-	MonoObject **field_objects;
 };
 
 /*
@@ -726,7 +746,7 @@ void
 mono_class_setup_supertypes (MonoClass *klass);
 
 void
-mono_class_setup_fields_locking (MonoClass *klass);
+mono_class_setup_fields (MonoClass *klass);
 
 /* WARNING
  * Only call this function if you can ensure both @klass and @parent
@@ -785,7 +805,7 @@ typedef struct {
 	size_t imt_slots_with_collisions;
 	size_t imt_max_collisions_in_slot;
 	size_t imt_method_count_when_max_collisions;
-	size_t imt_thunks_size;
+	size_t imt_trampolines_size;
 	size_t jit_info_table_insert_count;
 	size_t jit_info_table_remove_count;
 	size_t jit_info_table_lookup_count;
@@ -930,7 +950,7 @@ void
 mono_classes_cleanup (void);
 
 void
-mono_class_layout_fields   (MonoClass *klass, int instance_size);
+mono_class_layout_fields (MonoClass *klass, int base_instance_size, int packing_size, gboolean sre);
 
 void
 mono_class_setup_interface_offsets (MonoClass *klass);
@@ -1272,10 +1292,7 @@ const char*
 mono_lookup_jit_icall_symbol (const char *name);
 
 gboolean
-mono_class_set_failure (MonoClass *klass, guint32 ex_type, void *ex_data);
-
-gpointer
-mono_class_get_exception_data (MonoClass *klass);
+mono_class_set_type_load_failure (MonoClass *klass, const char * fmt, ...) MONO_ATTR_FORMAT_PRINTF(2,3);
 
 MonoException*
 mono_class_get_exception_for_failure (MonoClass *klass);
@@ -1361,8 +1378,11 @@ mono_class_setup_interface_id (MonoClass *klass);
 MonoGenericContainer*
 mono_class_get_generic_container (MonoClass *klass);
 
-MonoGenericClass*
-mono_class_get_generic_class (MonoClass *klass);
+gpointer
+mono_class_alloc (MonoClass *klass, int size);
+
+gpointer
+mono_class_alloc0 (MonoClass *klass, int size);
 
 void
 mono_class_alloc_ext (MonoClass *klass);
@@ -1445,20 +1465,40 @@ MonoClass*
 mono_class_try_load_from_name (MonoImage *image, const char* name_space, const char *name);
 
 void
-mono_error_set_for_class_failure (MonoError *orerror, MonoClass *klass);
+mono_error_set_for_class_failure (MonoError *orerror, const MonoClass *klass);
 
-static inline guint8
-mono_class_get_failure (MonoClass *klass)
-{
-	g_assert (klass != NULL);
-	return klass->exception_type;
-}
+gboolean
+mono_class_has_failure (const MonoClass *klass);
 
-static inline gboolean
-mono_class_has_failure (MonoClass *klass)
-{
-	g_assert (klass != NULL);
-	return mono_class_get_failure (klass) != MONO_EXCEPTION_NONE;
-}
+/* Kind specific accessors */
+MonoGenericClass*
+mono_class_get_generic_class (MonoClass *klass);
+
+MonoGenericClass*
+mono_class_try_get_generic_class (MonoClass *klass);
+
+void
+mono_class_set_flags (MonoClass *klass, guint32 flags);
+
+MonoGenericContainer*
+mono_class_try_get_generic_container (MonoClass *klass);
+
+void
+mono_class_set_generic_container (MonoClass *klass, MonoGenericContainer *container);
+
+guint32
+mono_class_get_first_method_idx (MonoClass *klass);
+
+void
+mono_class_set_first_method_idx (MonoClass *klass, guint32 idx);
+
+guint32
+mono_class_get_first_field_idx (MonoClass *klass);
+
+void
+mono_class_set_first_field_idx (MonoClass *klass, guint32 idx);
+
+/*Now that everything has been defined, let's include the inline functions */
+#include <mono/metadata/class-inlines.h>
 
 #endif /* __MONO_METADATA_CLASS_INTERNALS_H__ */

@@ -124,7 +124,6 @@ namespace MonoTests.System.Xml
 			Assert.IsTrue (site, "Site-2");
 		}
 
-#if NET_4_5
 		[Test]
 		[Category("Async")]
 		public void TestAsync ()
@@ -137,9 +136,8 @@ namespace MonoTests.System.Xml
 			Assert.AreEqual ("file", resolved.Scheme);
 			var task = sr.GetEntityAsync (resolved, null, typeof (Stream));
 			Assert.That (task.Wait (3000));
-			Assert.IsInstanceOfType (typeof (Stream), task.Result);
+			Assert.IsInstanceOfType (typeof (FileStream), task.Result);
 		}
-#endif
 
 	}
 }

@@ -26,12 +26,18 @@
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include <config.h>
+
 #include <stdlib.h>
 #include <glib.h>
 
 #include <windows.h>
+#if _MSC_VER && G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT)
+#include <shlobj.h>
+#endif
 #include <direct.h>
 #include <io.h>
+#include <assert.h>
 
 const gchar *
 g_getenv(const gchar *variable)
@@ -84,6 +90,7 @@ g_unsetenv(const gchar *variable)
 	g_free(var);
 }
 
+#if G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT)
 gchar*
 g_win32_getlocale(void)
 {
@@ -94,6 +101,28 @@ g_win32_getlocale(void)
 	ccBuf += GetLocaleInfoA(lcid, LOCALE_SISO3166CTRYNAME, buf + ccBuf, 9);
 	return g_strdup (buf);
 }
+
+#else /* G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT) */
+
+gchar*
+g_win32_getlocale(void)
+{
+	gunichar2 buf[19];
+	gint ccBuf = GetLocaleInfoEx (LOCALE_NAME_USER_DEFAULT, LOCALE_SISO639LANGNAME, buf, 9);
+	assert (ccBuf <= 9);
+	if (ccBuf != 0) {
+		buf[ccBuf - 1] = L'-';
+		ccBuf = GetLocaleInfoEx (LOCALE_NAME_USER_DEFAULT, LOCALE_SISO3166CTRYNAME, buf + ccBuf, 9);
+		assert (ccBuf <= 9);
+	}
+
+	// Check for GetLocaleInfoEx failure.
+	if (ccBuf == 0)
+		buf[0] = L'\0';
+
+	return u16to8 (buf);
+}
+#endif /* G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT) */
 
 gboolean
 g_path_is_absolute (const char *filename)
@@ -116,20 +145,34 @@ g_path_is_absolute (const char *filename)
 const gchar *
 g_get_home_dir (void)
 {
-	/* FIXME */
-	const gchar *drive = g_getenv ("HOMEDRIVE");
-	const gchar *path = g_getenv ("HOMEPATH");
 	gchar *home_dir = NULL;
-	
-	if (drive && path) {
-		home_dir = g_malloc(strlen(drive) + strlen(path) +1);
-		if (home_dir) {
-			sprintf(home_dir, "%s%s", drive, path);
-		}
+
+#if _MSC_VER && G_HAVE_API_SUPPORT(HAVE_CLASSIC_WINAPI_SUPPORT)
+	PWSTR profile_path = NULL;
+	HRESULT hr = SHGetKnownFolderPath (&FOLDERID_Profile, KF_FLAG_DEFAULT, NULL, &profile_path);
+	if (SUCCEEDED(hr)) {
+		home_dir = u16to8 (profile_path);
+		CoTaskMemFree (profile_path);
+	}
+#endif
+
+	if (!home_dir) {
+		home_dir = (gchar *) g_getenv ("USERPROFILE");
 	}
 
-	g_free (drive);
-	g_free (path);
+	if (!home_dir) {
+		const gchar *drive = g_getenv ("HOMEDRIVE");
+		const gchar *path = g_getenv ("HOMEPATH");
+
+		if (drive && path) {
+			home_dir = g_malloc (strlen (drive) + strlen (path) + 1);
+			if (home_dir) {
+				sprintf (home_dir, "%s%s", drive, path);
+			}
+		}
+		g_free (drive);
+		g_free (path);
+	}
 
 	return home_dir;
 }
@@ -163,4 +206,3 @@ g_get_tmp_dir (void)
 	}
 	return tmp_dir;
 }
-

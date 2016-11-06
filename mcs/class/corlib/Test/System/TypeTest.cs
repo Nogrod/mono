@@ -266,6 +266,7 @@ namespace MonoTests.System
 #endif
 		const string ASSEMBLY_NAME = "MonoTests.System.TypeTest";
 		static int typeIndexer = 0;
+		static bool isMono = Type.GetType ("Mono.Runtime", false) != null;
 
 		[SetUp]
 		public void SetUp ()
@@ -1834,8 +1835,8 @@ namespace MonoTests.System
 
 			Assert.AreEqual (t1.FullName, "System.__ComObject");
 
-			if (Environment.OSVersion.Platform == PlatformID.Win32Windows ||
-				Environment.OSVersion.Platform == PlatformID.Win32NT)
+			if (!isMono && (Environment.OSVersion.Platform == PlatformID.Win32Windows ||
+				Environment.OSVersion.Platform == PlatformID.Win32NT))
 				Activator.CreateInstance(t1);
 
 			Assert.AreEqual (t2.FullName, "System.__ComObject");
@@ -3057,9 +3058,15 @@ namespace MonoTests.System
 		public void MakeArrayTypeTest ()
 		{
 			// This should not crash:
-			typeof (void).MakeArrayType ();
+			Type t = typeof (void).MakeArrayType ();
 		}
 		
+		[Test]
+		[ExpectedException (typeof (InvalidProgramException))]
+		public void MakeArrayTypedReferenceInstanceTest ()
+		{
+			object o = Array.CreateInstance (typeof (global::System.TypedReference), 1);
+		}
 
 		[ComVisible (true)]
 		public class ComFoo<T> {
@@ -4188,6 +4195,17 @@ namespace MonoTests.System
 			MustFNFE (string.Format ("{0}, ZZZ{1}", typeof (MyRealEnum).FullName, aqn));
 			MustTLE (string.Format ("{0}ZZZZ", typeof (MyRealEnum).FullName));
 			MustTLE (string.Format ("{0}ZZZZ,{1}", typeof (MyRealEnum).FullName, aqn));
+		}
+
+		[Test]
+		public void GetTypeExceptionMsg () {
+			string typeName = "system.int32, foo";
+			try {
+				Type.GetType(typeName, true, false);
+			} catch (TypeLoadException ex) {
+				Assert.IsTrue (ex.Message.Contains ("system.int32"));
+				Assert.IsTrue (ex.Message.Contains ("foo"));
+			}
 		}
 
 	   	delegate void MyAction<in T>(T ag);

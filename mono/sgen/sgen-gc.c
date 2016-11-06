@@ -290,6 +290,8 @@ static SGEN_TV_DECLARE (time_major_conc_collection_end);
 
 int gc_debug_level = 0;
 FILE* gc_debug_file;
+static char* gc_params_options;
+static char* gc_debug_options;
 
 /*
 void
@@ -990,6 +992,24 @@ mono_gc_get_logfile (void)
 	return gc_debug_file;
 }
 
+void
+mono_gc_params_set (const char* options)
+{
+	if (gc_params_options)
+		g_free (gc_params_options);
+
+	gc_params_options = g_strdup (options);
+}
+
+void
+mono_gc_debug_set (const char* options)
+{
+	if (gc_debug_options)
+		g_free (gc_debug_options);
+
+	gc_debug_options = g_strdup (options);
+}
+
 static void
 scan_finalizer_entries (SgenPointerQueue *fin_queue, ScanCopyContext ctx)
 {
@@ -1169,7 +1189,6 @@ finish_gray_stack (int generation, ScanCopyContext ctx)
 
 	g_assert (sgen_gray_object_queue_is_empty (queue));
 
-	sgen_gray_object_queue_trim_free_list (queue);
 	binary_protocol_finish_gray_stack_end (sgen_timestamp (), generation);
 }
 
@@ -1461,7 +1480,7 @@ enqueue_scan_from_roots_jobs (SgenGrayQueue *gc_thread_gray_queue, char *heap_st
  * Return whether any objects were late-pinned due to being out of memory.
  */
 static gboolean
-collect_nursery (const char *reason, gboolean is_overflow, SgenGrayQueue *unpin_queue, gboolean finish_up_concurrent_mark)
+collect_nursery (const char *reason, gboolean is_overflow, SgenGrayQueue *unpin_queue)
 {
 	gboolean needs_major;
 	size_t max_garbage_amount;
@@ -1529,11 +1548,6 @@ collect_nursery (const char *reason, gboolean is_overflow, SgenGrayQueue *unpin_
 
 	gc_stats.minor_gc_count ++;
 
-	if (whole_heap_check_before_collection) {
-		sgen_clear_nursery_fragments ();
-		sgen_check_whole_heap (finish_up_concurrent_mark);
-	}
-
 	sgen_process_fin_stage_entries ();
 
 	/* pin from pinned handles */
@@ -1551,6 +1565,11 @@ collect_nursery (const char *reason, gboolean is_overflow, SgenGrayQueue *unpin_
 
 	if (remset_consistency_checks)
 		sgen_check_remset_consistency ();
+
+	if (whole_heap_check_before_collection) {
+		sgen_clear_nursery_fragments ();
+		sgen_check_whole_heap (FALSE);
+	}
 
 	TV_GETTIME (atv);
 	time_minor_pinning += TV_ELAPSED (btv, atv);
@@ -1697,7 +1716,7 @@ major_copy_or_mark_from_roots (SgenGrayQueue *gc_thread_gray_queue, size_t *old_
 	sgen_clear_nursery_fragments ();
 
 	if (whole_heap_check_before_collection)
-		sgen_check_whole_heap (mode == COPY_OR_MARK_FROM_ROOTS_FINISH_CONCURRENT);
+		sgen_check_whole_heap (TRUE);
 
 	TV_GETTIME (btv);
 	time_major_pre_collection_fragment_clear += TV_ELAPSED (atv, btv);
@@ -1785,13 +1804,6 @@ major_copy_or_mark_from_roots (SgenGrayQueue *gc_thread_gray_queue, size_t *old_
 	major_collector.pin_objects (gc_thread_gray_queue);
 	if (old_next_pin_slot)
 		*old_next_pin_slot = sgen_get_pinned_count ();
-
-	/*
-	 * We don't actually pin when starting a concurrent collection, so the remset
-	 * consistency check won't work.
-	 */
-	if (remset_consistency_checks && mode != COPY_OR_MARK_FROM_ROOTS_START_CONCURRENT)
-		sgen_check_remset_consistency ();
 
 	TV_GETTIME (btv);
 	time_major_pinning += TV_ELAPSED (atv, btv);
@@ -1974,9 +1986,6 @@ major_finish_collection (SgenGrayQueue *gc_thread_gray_queue, const char *reason
 
 	reset_heap_boundaries ();
 	sgen_update_heap_boundaries ((mword)sgen_get_nursery_start (), (mword)sgen_get_nursery_end ());
-
-	if (whole_heap_check_before_collection)
-		sgen_check_whole_heap (FALSE);
 
 	/* walk the pin_queue, build up the fragment list of free memory, unmark
 	 * pinned objects as we go, memzero() the empty fragments so they are ready for the
@@ -2257,7 +2266,7 @@ sgen_perform_collection (size_t requested_size, int generation_to_collect, const
 		if (concurrent_collection_in_progress)
 			major_update_concurrent_collection ();
 
-		if (collect_nursery (reason, FALSE, NULL, FALSE) && !concurrent_collection_in_progress) {
+		if (collect_nursery (reason, FALSE, NULL) && !concurrent_collection_in_progress) {
 			overflow_generation_to_collect = GENERATION_OLD;
 			overflow_reason = "Minor overflow";
 		}
@@ -2267,7 +2276,7 @@ sgen_perform_collection (size_t requested_size, int generation_to_collect, const
 	} else {
 		SGEN_ASSERT (0, generation_to_collect == GENERATION_OLD, "We should have handled nursery collections above");
 		if (major_collector.is_concurrent && !wait_to_finish) {
-			collect_nursery ("Concurrent start", FALSE, NULL, FALSE);
+			collect_nursery ("Concurrent start", FALSE, NULL);
 			major_start_concurrent_collection (reason);
 			oldest_generation_collected = GENERATION_NURSERY;
 		} else if (major_do_collection (reason, FALSE, wait_to_finish)) {
@@ -2285,7 +2294,7 @@ sgen_perform_collection (size_t requested_size, int generation_to_collect, const
 		 */
 
 		if (overflow_generation_to_collect == GENERATION_NURSERY)
-			collect_nursery (overflow_reason, TRUE, NULL, FALSE);
+			collect_nursery (overflow_reason, TRUE, NULL);
 		else
 			major_do_collection (overflow_reason, TRUE, wait_to_finish);
 
@@ -2746,6 +2755,8 @@ sgen_gc_init (void)
 	char **opts, **ptr;
 	char *major_collector_opt = NULL;
 	char *minor_collector_opt = NULL;
+	char *params_opts = NULL;
+	char *debug_opts = NULL;
 	size_t max_heap = 0;
 	size_t soft_limit = 0;
 	int result;
@@ -2783,8 +2794,12 @@ sgen_gc_init (void)
 
 	mono_coop_mutex_init (&sgen_interruption_mutex);
 
-	if ((env = g_getenv (MONO_GC_PARAMS_NAME))) {
-		opts = g_strsplit (env, ",", -1);
+	if ((env = g_getenv (MONO_GC_PARAMS_NAME)) || gc_params_options) {
+		params_opts = g_strdup_printf ("%s,%s", gc_params_options ? gc_params_options : "", env ? env : "");
+	}
+
+	if (params_opts) {
+		opts = g_strsplit (params_opts, ",", -1);
 		for (ptr = opts; *ptr; ++ptr) {
 			char *opt = *ptr;
 			if (g_str_has_prefix (opt, "major=")) {
@@ -2986,15 +3001,22 @@ sgen_gc_init (void)
 	if (minor_collector_opt)
 		g_free (minor_collector_opt);
 
+	if (params_opts)
+		g_free (params_opts);
+
 	alloc_nursery ();
 
 	sgen_pinning_init ();
 	sgen_cement_init (cement_enabled);
 
-	if ((env = g_getenv (MONO_GC_DEBUG_NAME))) {
+	if ((env = g_getenv (MONO_GC_DEBUG_NAME)) || gc_debug_options) {
+		debug_opts = g_strdup_printf ("%s,%s", gc_debug_options ? gc_debug_options  : "", env ? env : "");
+	}
+
+	if (debug_opts) {
 		gboolean usage_printed = FALSE;
 
-		opts = g_strsplit (env, ",", -1);
+		opts = g_strsplit (debug_opts, ",", -1);
 		for (ptr = opts; ptr && *ptr; ptr ++) {
 			char *opt = *ptr;
 			if (!strcmp (opt, ""))
@@ -3124,6 +3146,9 @@ sgen_gc_init (void)
 		}
 		g_strfreev (opts);
 	}
+
+	if (debug_opts)
+		g_free (debug_opts);
 
 	if (check_mark_bits_after_major_collection)
 		nursery_clear_policy = CLEAR_AT_GC;
@@ -3259,7 +3284,7 @@ sgen_check_whole_heap_stw (void)
 {
 	sgen_stop_world (0);
 	sgen_clear_nursery_fragments ();
-	sgen_check_whole_heap (FALSE);
+	sgen_check_whole_heap (TRUE);
 	sgen_restart_world (0);
 }
 
