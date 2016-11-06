@@ -36,7 +36,7 @@ namespace Mono.CSharp
 	{
 		readonly CompilerContext ctx;
 #if STATIC
-		static readonly Regex FileErrorRegex = new Regex(@"([\w\.]+)\(\d+,\d+\): error|error \w+: Source file `[\\\./]*([\w\.]+)", RegexOptions.Compiled);
+		static readonly Regex FileErrorRegex = new Regex(@"([\w\.]+)\(\d+\,\d+\+?\): error|error \w+: Source file `[\\\./]*([\w\.]+)", RegexOptions.Compiled);
         static MemoryStream assemblyStream;
         static Dictionary<string, byte[]> _sourceFiles;
 		static Dictionary<string, byte[]> _referenceFiles;
